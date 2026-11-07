@@ -169,7 +169,8 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if err := json.Unmarshal([]byte(*holderJSON), &kf.Holder); err != nil {
-		fmt.Fprintf(stderr, "lease: bad holder identity: %s\n", err)
+		// Diagnostic output is best effort.
+		_, _ = fmt.Fprintf(stderr, "lease: bad holder identity: %s\n", err)
 		return exitUsage
 	}
 	if kf.NoWait {
@@ -182,7 +183,8 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
-		fmt.Fprintf(stdout, "err %s\n", err)
+		// Protocol output is best effort, as for the other responses.
+		_, _ = fmt.Fprintf(stdout, "err %s\n", err)
 		return 1
 	}
 
@@ -197,7 +199,8 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 		Token:     kf.Token,
 		Command:   kf.Holder.Command,
 		Note: func(format string, args ...any) {
-			fmt.Fprintf(stderr, "lease: "+format+"\n", args...)
+			// Diagnostic output is best effort.
+			_, _ = fmt.Fprintf(stderr, "lease: "+format+"\n", args...)
 		},
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -231,12 +234,14 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		var busy *lease.BusyError
 		if errors.As(err, &busy) {
-			fmt.Fprint(stdout, "busy ")
+			// Protocol output is best effort, as for the encoded response.
+			_, _ = fmt.Fprint(stdout, "busy ")
 			_ = json.NewEncoder(stdout).Encode(busy)
 			return lease.ExitBusy
 		}
 		// stderr is /dev/null for a keeper; report over the protocol.
-		fmt.Fprintf(stdout, "err %s\n", err)
+		// Protocol output is best effort, as for the other responses.
+		_, _ = fmt.Fprintf(stdout, "err %s\n", err)
 		return 1
 	}
 
@@ -245,7 +250,8 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	close(acquiring)
-	fmt.Fprintf(stdout, "ok %s\n", kf.Token)
+	// Output is best effort; preserve the command result.
+	_, _ = fmt.Fprintf(stdout, "ok %s\n", kf.Token)
 	timer := time.NewTimer(kf.TTL)
 	defer timer.Stop()
 	select {

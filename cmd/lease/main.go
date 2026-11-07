@@ -36,7 +36,8 @@ func run(args []string) int {
 	case "config":
 		return cli.ConfigCommand(args[1:], stdout, stderr)
 	case "version":
-		fmt.Fprintf(stdout, "lease %s\n", version.Version)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stdout, "lease %s\n", version.Version)
 		return 0
 	case "_keeper":
 		// Hidden: the backing process behind 'lease acquire'.
@@ -45,14 +46,16 @@ func run(args []string) int {
 		usage(stdout)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "lease: unknown command %q\n", args[0])
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: unknown command %q\n", args[0])
 		usage(stderr)
 		return 2
 	}
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `lease - named locks for scarce machine resources
+	// Usage output is best effort.
+	_, _ = fmt.Fprint(w, `lease - named locks for scarce machine resources
 
 usage:
   lease run NAME [NAME...] [--slots N] [--wait DURATION | --no-wait] [--ttl DURATION] -- CMD ARGS

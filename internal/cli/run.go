@@ -116,7 +116,8 @@ func (r *RunOptions) prepare(stderr io.Writer) (*lease.Options, error) {
 		Wait:      r.Wait,
 		TTL:       r.TTL,
 		Note: func(format string, args ...any) {
-			fmt.Fprintf(stderr, "lease: "+format+"\n", args...)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: "+format+"\n", args...)
 		},
 	}
 	return opts, nil
@@ -131,28 +132,33 @@ func RunCommand(argv []string, stdout, stderr io.Writer) int {
 	opts0.register(fs)
 	pre, cmdArgs, err := splitCommand(argv)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease run: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease run: %s\n", err)
 		return exitUsage
 	}
 
 	var names []string
 	names, err = parseArgs(fs, pre)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease run: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease run: %s\n", err)
 		return exitUsage
 	}
 	if len(names) == 0 || len(cmdArgs) == 0 {
-		fmt.Fprintln(stderr, "usage: lease run NAME [NAME...] [--slots N] [--wait DURATION | --no-wait] [--ttl DURATION] -- CMD ARGS")
+		// Usage output is best effort.
+		_, _ = fmt.Fprintln(stderr, "usage: lease run NAME [NAME...] [--slots N] [--wait DURATION | --no-wait] [--ttl DURATION] -- CMD ARGS")
 		return exitUsage
 	}
 	if opts0.NoWait && opts0.Wait > time.Nanosecond {
-		fmt.Fprintln(stderr, `lease run: --no-wait and --wait are mutually exclusive`)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, `lease run: --no-wait and --wait are mutually exclusive`)
 		return exitUsage
 	}
 
 	opts, err := opts0.prepare(stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		if errors.Is(err, errInvalidOptions) {
 			return exitUsage
 		}
@@ -176,17 +182,21 @@ func RunCommand(argv []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		select {
 		case sig := <-sigCh:
-			fmt.Fprintf(stderr, "lease: interrupted by %s\n", sig)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: interrupted by %s\n", sig)
 			return 128 + int(sig.(syscall.Signal))
 		default:
 		}
 		var busy *lease.BusyError
 		if errors.As(err, &busy) {
-			fmt.Fprintf(stderr, "lease: %s\n", busy)
-			fmt.Fprintf(stderr, "lease: retry with --wait 5m, or inspect with 'lease status %s'\n", busy.Resource)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: %s\n", busy)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: retry with --wait 5m, or inspect with 'lease status %s'\n", busy.Resource)
 			return lease.ExitBusy
 		}
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
 	defer acq.Release()
@@ -204,7 +214,8 @@ func RunCommand(argv []string, stdout, stderr io.Writer) int {
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
 	if err := child.Start(); err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
 	done := make(chan error, 1)

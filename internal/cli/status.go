@@ -23,12 +23,14 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 	configPath := fs.String("config", "", "path to the config file (default: $LEASE_CONFIG or the user config dir)")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return exitUsage
 	}
 
 	if err := lease.ValidateNames(names); err != nil {
-		fmt.Fprintln(stderr, err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
 	cfgPath := *configPath
@@ -37,14 +39,16 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
 
 	st := store.NewFileStore(stateDir(cfg))
 	if len(names) > 0 {
 		if _, err := st.Events(); err != nil {
-			fmt.Fprintf(stderr, "lease: %s\n", err)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
 		}
 	}
@@ -54,7 +58,8 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 	if len(resources) == 0 {
 		existing, err := st.Resources()
 		if err != nil {
-			fmt.Fprintf(stderr, "lease: %s\n", err)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
 		}
 		resources = existing
@@ -68,13 +73,15 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 	stateDir := stateDir(cfg)
 	views, err := lease.Inspect(stateDir, st, cfg, resources)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
 
 	if *asJSON {
 		if err := RenderJSON(stdout, views); err != nil {
-			fmt.Fprintf(stderr, "lease: %s\n", err)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
 		}
 		return 0
@@ -98,26 +105,33 @@ func ConfigCommand(argv []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "state dir: %s\n", stateDir(cfg))
+	// Output is best effort; preserve the command result.
+	_, _ = fmt.Fprintf(stdout, "state dir: %s\n", stateDir(cfg))
 	if cfg.Path == "" {
-		fmt.Fprintln(stdout, "config file: (none, defaults in effect)")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stdout, "config file: (none, defaults in effect)")
 	} else {
-		fmt.Fprintf(stdout, "config file: %s\n", cfg.Path)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stdout, "config file: %s\n", cfg.Path)
 	}
-	fmt.Fprintln(stdout, "resources:")
+	// Output is best effort; preserve the command result.
+	_, _ = fmt.Fprintln(stdout, "resources:")
 	names := make([]string, 0, len(cfg.Resources))
 	for name := range cfg.Resources {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		fmt.Fprintln(stdout, "  (none configured; unknown names default to 1 exclusive slot)")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stdout, "  (none configured; unknown names default to 1 exclusive slot)")
 	}
 	for _, name := range names {
-		fmt.Fprintf(stdout, "  %s: %d slot(s)\n", name, cfg.Slots(name))
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stdout, "  %s: %d slot(s)\n", name, cfg.Slots(name))
 	}
 	return 0
 }
@@ -145,16 +159,19 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 	configPath := fs.String("config", "", "config file")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return exitUsage
 	}
 	if len(names) != 1 || *reason == "" {
-		fmt.Fprintln(stderr, "usage: lease force-release NAME --reason TEXT")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, "usage: lease force-release NAME --reason TEXT")
 		return exitUsage
 	}
 	name := names[0]
 	if !store.NameValid(name) {
-		fmt.Fprintf(stderr, "lease: invalid resource name %q\n", name)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: invalid resource name %q\n", name)
 		return exitUsage
 	}
 
@@ -164,14 +181,16 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	dir := stateDir(cfg)
 	st := store.NewFileStore(dir)
 	holders, err := st.Holders()
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
 
@@ -183,7 +202,8 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 		}
 		found = true
 		if proc.HolderIsStale(h.PID, h.ProcStart) == nil {
-			fmt.Fprintf(stdout, "slot %d of %q is still held by a live process (%s); force-release never kills processes\n",
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stdout, "slot %d of %q is still held by a live process (%s); force-release never kills processes\n",
 				h.Slot, name, lease.DescribeHolder(&h))
 			continue
 		}
@@ -200,16 +220,19 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 			return nil
 		})
 		if err != nil {
-			fmt.Fprintf(stderr, "lease: %s\n", err)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
 		}
 		if !cleared {
 			continue
 		}
-		fmt.Fprintf(stdout, "cleared stale holder of slot %d: %s\n", h.Slot, prev)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stdout, "cleared stale holder of slot %d: %s\n", h.Slot, prev)
 	}
 	if !found {
-		fmt.Fprintf(stdout, "no holder records for %q\n", name)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stdout, "no holder records for %q\n", name)
 	}
 	return 0
 }
@@ -225,21 +248,25 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 	ownerPID := fs.Int("owner-pid", os.Getppid(), "process that owns the lease")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return exitUsage
 	}
 	if len(names) == 0 {
-		fmt.Fprintln(stderr, "usage: lease acquire NAME [NAME...] [--slots N] [--wait DURATION | --no-wait] [--ttl DURATION]")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, "usage: lease acquire NAME [NAME...] [--slots N] [--wait DURATION | --no-wait] [--ttl DURATION]")
 		return exitUsage
 	}
 	if opts.NoWait && opts.Wait > 0 {
-		fmt.Fprintln(stderr, "lease acquire: --no-wait and --wait are mutually exclusive")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, "lease acquire: --no-wait and --wait are mutually exclusive")
 		return exitUsage
 	}
 
 	leaseOpts, err := opts.prepare(stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		if errors.Is(err, errInvalidOptions) {
 			return exitUsage
 		}
@@ -247,18 +274,21 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := lease.ValidateNames(names); err != nil {
-		fmt.Fprintln(stderr, err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
 	for _, name := range names {
 		if opts.Slots > leaseOpts.Capacity(name) {
-			fmt.Fprintf(stderr, "lease: resource %q has too few slots\n", name)
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stderr, "lease: resource %q has too few slots\n", name)
 			return exitUsage
 		}
 	}
 	ownerStart := proc.Fingerprint(*ownerPID)
 	if ownerStart == "" {
-		fmt.Fprintln(stderr, "lease: owner process is not available")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, "lease: owner process is not available")
 		return exitUsage
 	}
 	ttl := opts.TTL
@@ -266,39 +296,29 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 		ttl = leaseOpts.Config.ManualTTL
 	}
 	if ttl <= 0 {
-		fmt.Fprintln(stderr, "lease: manual TTL must be positive")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, "lease: manual TTL must be positive")
 		return exitUsage
 	}
 	token, err := newToken()
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
 	tok, _, err := startKeeper(keeperFlags{StateDir: leaseOpts.StateDir, Names: names, Slots: opts.Slots, OwnerPID: *ownerPID, OwnerStart: ownerStart, Token: token, Config: opts.Config, Wait: opts.Wait, NoWait: opts.NoWait, TTL: ttl, Holder: holderIdentity{User: leaseOpts.Identity.User, TaskID: leaseOpts.Identity.TaskID, CIRunID: leaseOpts.Identity.CIRunID, CIJob: leaseOpts.Identity.CIJob, Command: "lease"}})
 	if err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		var busy *lease.BusyError
 		if errors.As(err, &busy) {
 			return lease.ExitBusy
 		}
 		return 1
 	}
-	fmt.Fprintln(stdout, tok)
+	// Output is best effort; preserve the command result.
+	_, _ = fmt.Fprintln(stdout, tok)
 	return 0
-}
-
-// describeBusy prints the holder of a busy resource when one is recorded.
-func describeBusy(stderr io.Writer, opts *lease.Options, name string) {
-	holders, err := opts.Store.Holders()
-	if err != nil {
-		return
-	}
-	for _, h := range holders {
-		if h.Resource == name {
-			fmt.Fprintf(stderr, "lease: %q is held by %s\n", name, lease.DescribeHolder(&h))
-			return
-		}
-	}
 }
 
 // ReleaseCommand implements lease release TOKEN.
@@ -310,11 +330,13 @@ func ReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: lease release TOKEN")
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintln(stderr, "usage: lease release TOKEN")
 		return exitUsage
 	}
 	if err := releaseToken(args[0], *configPath); err != nil {
-		fmt.Fprintf(stderr, "lease: %s\n", err)
+		// Output is best effort; preserve the command result.
+		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
 	return 0
@@ -329,12 +351,14 @@ func clearObservedWith(st store.Store, dir string, observed *store.Holder, befor
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = f.Close() }()
 	ok, err := lock.TryLock(f)
 	if err != nil || !ok {
 		return false, err
 	}
-	defer lock.Unlock(f)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = lock.Unlock(f) }()
 	current, err := st.Holder(observed.Resource, observed.Slot)
 	if err != nil || current == nil || *current != *observed {
 		return false, err

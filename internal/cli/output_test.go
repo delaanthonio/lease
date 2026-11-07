@@ -158,12 +158,14 @@ func TestStatusShowsLockedSlotWithMissingMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = file.Close() }()
 	ok, err := lock.TryLock(file)
 	if err != nil || !ok {
 		t.Fatalf("lock: %v", err)
 	}
-	defer lock.Unlock(file)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = lock.Unlock(file) }()
 	views, err := lease.Inspect(dir, store.NewMemStore(), nil, []string{"db"})
 	if err != nil {
 		t.Fatal(err)
@@ -208,12 +210,14 @@ func TestCleanupPreservesReplacementHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = f.Close() }()
 	ok, err := lock.TryLock(f)
 	if err != nil || !ok {
 		t.Fatal("failed to lock slot")
 	}
-	defer lock.Unlock(f)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = lock.Unlock(f) }()
 	cleared, err = clearObserved(st, dir, replacement)
 	if err != nil || cleared {
 		t.Fatalf("cleared locked holder: %v %v", cleared, err)

@@ -283,11 +283,13 @@ func TestTTLExpiryRequiresGoneHolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSlot: %v", err)
 	}
-	defer fl.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = fl.Close() }()
 	if ok, err := lock.TryLock(fl); err != nil || !ok {
 		t.Fatalf("test could not hold the slot lock: %v", err)
 	}
-	defer lock.Unlock(fl)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = lock.Unlock(fl) }()
 	live := selfHolder("db", 1)
 	live.AcquiredAt = time.Now().Add(-2 * time.Hour).UTC()
 	if err := f.store.SetHolder(live); err != nil {
@@ -302,7 +304,9 @@ func TestTTLExpiryRequiresGoneHolder(t *testing.T) {
 
 	// The same record for a gone pid is evicted: the lock is free, the
 	// record is old and its process is unresponsive.
-	lock.Unlock(fl)
+	if err := lock.Unlock(fl); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
 	gone := *live
 	gone.PID = 999999999
 	gone.ProcStart = ""
@@ -377,7 +381,7 @@ func TestAcquireOneFailsWhenAllSlotsBusy(t *testing.T) {
 	waiter := f.options()
 	waiter.Wait = time.Nanosecond
 	_, err = waiter.AcquireOne("sim")
-	busyResource(t, err)
+	_ = busyResource(t, err) // The helper asserts the error type.
 }
 
 type eventHookStore struct {
@@ -424,7 +428,7 @@ func TestBoundedWaitCannotAcquireAfterDeadline(t *testing.T) {
 		got.Release()
 		t.Fatal("acquired after the deadline")
 	}
-	busyResource(t, err)
+	_ = busyResource(t, err) // The helper asserts the error type.
 	if !afterWait {
 		t.Fatal("the initial attempt did not encounter contention")
 	}
@@ -583,7 +587,7 @@ func TestDeadlineRecheckedAfterRecordingLastResource(t *testing.T) {
 		acq.Release()
 		t.Fatal("acquisition succeeded after the deadline")
 	}
-	busyResource(t, err)
+	_ = busyResource(t, err) // The helper asserts the error type.
 	used, err := lock.Probe(f.stateDir, "db", 1)
 	if err != nil || used {
 		t.Fatalf("expired acquisition retained lock: %v %v", used, err)

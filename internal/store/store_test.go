@@ -231,7 +231,9 @@ func TestFileStoreSurvivesTornLine(t *testing.T) {
 	if _, err := f.WriteString(`{"at":"`); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
 	events, err := st.Events()
 	if err != nil {
 		t.Fatalf("Events after torn line: %v", err)

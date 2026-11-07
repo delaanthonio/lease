@@ -64,7 +64,8 @@ func Probe(root, resource string, slot int) (used bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = f.Close() }()
 	ok, err := TryLock(f)
 	if err != nil {
 		return false, err

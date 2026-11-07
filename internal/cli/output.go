@@ -92,7 +92,8 @@ func RenderTable(w io.Writer, views []lease.ResourceView, now time.Time) {
 		}
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "no resources to show")
+		// Table output is best effort.
+		_, _ = fmt.Fprintln(w, "no resources to show")
 		return
 	}
 	header := []string{"RESOURCE", "HOLDER", "SINCE", "SLOTS", "WAITING"}
@@ -115,7 +116,8 @@ func RenderTable(w io.Writer, views []lease.ResourceView, now time.Time) {
 				b.WriteString(strings.Repeat(" ", widths[i]-len(cell)+2))
 			}
 		}
-		fmt.Fprintln(w, strings.TrimRight(b.String(), " "))
+		// Table output is best effort.
+		_, _ = fmt.Fprintln(w, strings.TrimRight(b.String(), " "))
 	}
 	printRow(header)
 	sep := make([]string, len(header))

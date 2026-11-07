@@ -28,7 +28,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(dir)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = os.RemoveAll(dir) }()
 	// Build from the module root, two levels above this package.
 	root, err := filepath.Abs(filepath.Join(".", "..", ".."))
 	if err != nil {
@@ -319,7 +320,7 @@ func TestForceReleaseLogsReason(t *testing.T) {
 
 	// A stale record: the recorded process is long gone.
 	// Acquire and kill the keeper, leaving the record behind.
-	stdout, _, code := runLease(t, env, 10*time.Second, "acquire", "db")
+	_, _, code := runLease(t, env, 10*time.Second, "acquire", "db")
 	if code != 0 {
 		t.Fatalf("acquire exit = %d", code)
 	}
@@ -328,14 +329,13 @@ func TestForceReleaseLogsReason(t *testing.T) {
 		t.Fatalf("kill keeper: %v", err)
 	}
 
-	stdout, _, code = runLease(t, env, 10*time.Second, "force-release", "db", "--reason", "stuck after crash")
+	stdout, _, code := runLease(t, env, 10*time.Second, "force-release", "db", "--reason", "stuck after crash")
 	if code != 0 || !strings.Contains(stdout, "cleared") {
 		t.Fatalf("force-release exit=%d stdout=%q", code, stdout)
 	}
 
 	// The reason and previous holder are in the history.
-	stdout, _, code = runLease(t, env, 10*time.Second, "status", "--json")
-	_ = stdout
+	_, _, _ = runLease(t, env, 10*time.Second, "status", "--json")
 	events := readFile(t, filepath.Join(dir, "events.ndjson"))
 	if !strings.Contains(events, "force-release") || !strings.Contains(events, "stuck after crash") {
 		t.Fatalf("force-release reason not logged: %s", events)
@@ -603,21 +603,25 @@ func TestHistoryLockHonorsDeadlineAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer history.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = history.Close() }()
 	if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = syscall.Flock(int(history.Fd()), syscall.LOCK_UN) }()
 	slot, err := lock.OpenSlot(dir, "db", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer slot.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = slot.Close() }()
 	ok, err := lock.TryLock(slot)
 	if err != nil || !ok {
 		t.Fatalf("lock resource: %v", err)
 	}
-	defer lock.Unlock(slot)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = lock.Unlock(slot) }()
 	for _, command := range []string{"run", "acquire"} {
 		args := []string{command, "db", "--wait", "100ms"}
 		if command == "run" {
@@ -642,7 +646,8 @@ func TestHistoryLockHonorsDeadlineAndCancellation(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
-	case <-done:
+	case err := <-done:
+		_ = err // Only completion after cancellation matters here.
 	case <-time.After(2 * time.Second):
 		t.Fatal("SIGTERM did not interrupt acquisition")
 	}
@@ -666,12 +671,14 @@ func TestNoWaitDoesNotWaitForHistoryLock(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						defer slot.Close()
+						// Cleanup is best effort; preserve the existing result.
+						defer func() { _ = slot.Close() }()
 						ok, err := lock.TryLock(slot)
 						if err != nil || !ok {
 							t.Fatalf("lock resource: %v", err)
 						}
-						defer lock.Unlock(slot)
+						// Cleanup is best effort; preserve the existing result.
+						defer func() { _ = lock.Unlock(slot) }()
 					}
 					if scenario == "takeover" {
 						if err := store.NewFileStore(dir).SetHolder(&store.Holder{Resource: "db", Slot: 1, PID: 999999999, ProcStart: "gone"}); err != nil {
@@ -682,11 +689,13 @@ func TestNoWaitDoesNotWaitForHistoryLock(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer history.Close()
+					// Cleanup is best effort; preserve the existing result.
+					defer func() { _ = history.Close() }()
 					if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
 						t.Fatal(err)
 					}
-					defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+					// Cleanup is best effort; preserve the existing result.
+					defer func() { _ = syscall.Flock(int(history.Fd()), syscall.LOCK_UN) }()
 					args := []string{command, "db", wait}
 					if command == "run" {
 						args = append(args, "--", "/bin/echo", "executed")
@@ -753,11 +762,13 @@ func TestNoWaitReleaseDoesNotWaitForHistoryLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer history.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = history.Close() }()
 	if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = syscall.Flock(int(history.Fd()), syscall.LOCK_UN) }()
 	if err := os.WriteFile(finish, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -833,11 +844,13 @@ func TestStaleManualReleaseSkipsBusyHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer history.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = history.Close() }()
 	if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = syscall.Flock(int(history.Fd()), syscall.LOCK_UN) }()
 	_, stderr, code := runLease(t, env, 3*time.Second, "release", "l-stale")
 	if code != 0 {
 		t.Fatalf("release: exit %d stderr %q", code, stderr)
@@ -859,11 +872,13 @@ func TestForceReleaseKeepsHolderWhenHistoryLocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = f.Close() }()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
 	_, stderr, code := runLease(t, env, 5*time.Second, "force-release", "db", "--reason", "repair")
 	if code == 0 || !strings.Contains(stderr, "record force-release reason") {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
@@ -905,11 +920,13 @@ func TestStatusDuringHistoryPruneContention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = f.Close() }()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
 	for _, args := range [][]string{{"status", "--json", "db"}, {"status", "--json"}} {
 		out, stderr, code := runLease(t, env, 5*time.Second, args...)
 		var views []struct {

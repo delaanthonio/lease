@@ -231,7 +231,8 @@ func (s *FileStore) AppendEventContext(ctx context.Context, e Event, noWait bool
 	if err != nil {
 		return err
 	}
-	defer lf.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = lf.Close() }()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -254,7 +255,8 @@ func (s *FileStore) AppendEventContext(ctx context.Context, e Event, noWait bool
 		case <-timer.C:
 		}
 	}
-	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN) }()
 	if paths.Shared {
 		info, err := os.Stat(s.eventsPath())
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -316,14 +318,16 @@ func (s *FileStore) Events() ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer lf.Close()
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = lf.Close() }()
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
 			return kept, nil
 		}
 		return nil, err
 	}
-	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN) }()
 	events, err = s.readEvents()
 	if err != nil {
 		return nil, err
@@ -415,18 +419,23 @@ func writeFileSyncMode(path string, raw []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		// Cleanup is best effort; preserve the existing result.
+		_ = tmp.Close()
+		// Cleanup is best effort; preserve the existing result.
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	// Cleanup is best effort; preserve the existing result.
+	defer func() { _ = os.Remove(tmpName) }()
 	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
+		// Cleanup is best effort; preserve the existing result.
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		// Cleanup is best effort; preserve the existing result.
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

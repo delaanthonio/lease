@@ -268,7 +268,8 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 			}
 			ok, err := lock.TryLock(f)
 			if err != nil {
-				f.Close()
+				// Closing an unused descriptor is best effort.
+				_ = f.Close()
 				a.dropTentative(taken)
 				return err
 			}
@@ -278,7 +279,8 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 				taken = append(taken, u)
 				continue
 			}
-			f.Close()
+			// Closing an unused descriptor is best effort.
+			_ = f.Close()
 		}
 		if len(taken) >= want {
 			_, _ = o.Store.Waiters(resource)

@@ -108,7 +108,8 @@ func OpenFile(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, FileMode())
 	if err == nil {
 		if err := f.Chmod(FileMode()); err != nil {
-			f.Close()
+			// Cleanup is best effort; preserve the existing result.
+			_ = f.Close()
 			return nil, err
 		}
 		return f, nil
