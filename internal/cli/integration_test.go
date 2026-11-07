@@ -33,7 +33,8 @@ func TestMain(m *testing.M) {
 	root, err := filepath.Abs(filepath.Join(".", "..", ".."))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.RemoveAll(dir)
+		// Cleanup is best effort.
+		_ = os.RemoveAll(dir)
 		os.Exit(1)
 	}
 	bin := filepath.Join(dir, "lease")
@@ -42,12 +43,14 @@ func TestMain(m *testing.M) {
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "build lease: %v\n", err)
-		os.RemoveAll(dir)
+		// Cleanup is best effort.
+		_ = os.RemoveAll(dir)
 		os.Exit(1)
 	}
 	leaseBin = bin
 	code := m.Run()
-	os.RemoveAll(dir)
+	// Cleanup is best effort.
+	_ = os.RemoveAll(dir)
 	os.Exit(code)
 }
 
@@ -336,7 +339,8 @@ func TestAcquireReleasesResourcesWhenTokenOutputFails(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer output.Close()
+			// Cleanup is best effort.
+			defer func() { _ = output.Close() }()
 
 			cmd := exec.Command(leaseBin, "acquire", "db", "ports")
 			cmd.Env = env
