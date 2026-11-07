@@ -225,6 +225,8 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		if !cleared {
+			// Output is best effort; preserve the command result.
+			_, _ = fmt.Fprintf(stdout, "slot %d of %q is still locked; a descendant may still hold it\n", h.Slot, name)
 			continue
 		}
 		// Output is best effort; preserve the command result.
