@@ -9,6 +9,7 @@
 package store
 
 import (
+	"context"
 	"time"
 )
 
@@ -101,4 +102,16 @@ type Store interface {
 	// Resources lists every resource that has at least one holder record,
 	// waiter ticket, or history event.
 	Resources() ([]string, error)
+}
+
+func AppendEventContext(ctx context.Context, st Store, event Event) error {
+	if contextual, ok := st.(interface {
+		AppendEventContext(context.Context, Event) error
+	}); ok {
+		return contextual.AppendEventContext(ctx, event)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return st.AppendEvent(event)
 }

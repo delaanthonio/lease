@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/delaanthonio/lease/internal/lock"
 	"github.com/delaanthonio/lease/internal/paths"
 )
 
@@ -128,14 +129,25 @@ func TestRunContentionTwoCallers(t *testing.T) {
 }
 
 func TestHolderKilledIsTakenOver(t *testing.T) {
-	_, env := leaseEnv(t)
-
-	holder := exec.Command(leaseBin, "run", "db", "--", "/bin/sleep", "3")
-	holder.Env = env
+	dir, env := leaseEnv(t)
+	ready := filepath.Join(dir, "child-ready")
+	holder := exec.Command(leaseBin, "run", "db", "--", "/bin/sh", "-c", `touch "$READY"; exec /bin/sleep 3`)
+	holder.Env = append(env, "READY="+ready)
 	if err := holder.Start(); err != nil {
 		t.Fatalf("start holder: %v", err)
 	}
-	waitForHolder(t, env, "db")
+	defer func() { _ = holder.Process.Kill(); _ = holder.Wait() }()
+	childReady := false
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(ready); err == nil {
+			childReady = true
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !childReady {
+		t.Fatal("child did not start")
+	}
 
 	if err := holder.Process.Kill(); err != nil {
 		t.Fatal(err)
@@ -511,11 +523,14 @@ func TestPartialAcquisitionVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = waiter.Process.Kill(); _ = waiter.Wait() }()
-	waitForHolder(t, env, "a")
-	out, _, code := runLease(t, env, 5*time.Second, "status", "--json", "a")
-	if code != 0 || !strings.Contains(out, "task:partial") {
-		t.Fatalf("partial holder missing: %s", out)
+	for i := 0; i < 100; i++ {
+		out, _, code := runLease(t, env, 5*time.Second, "status", "--json", "a")
+		if code == 0 && strings.Contains(out, "task:partial") {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
 	}
+	t.Fatal("partial holder never became visible")
 }
 
 func TestManualReleaseCompletesSet(t *testing.T) {
@@ -562,5 +577,72 @@ func TestSharedHistoryRecordsBothParticipants(t *testing.T) {
 	_, _, code := runLease(t, env, 5*time.Second, "run", "db", "--record-command", "--", "/bin/echo", "secret")
 	if code == 0 {
 		t.Fatal("shared mode accepted full command recording")
+	}
+}
+
+func TestInvalidAcquisitionFlagsAreUsageErrors(t *testing.T) {
+	_, env := leaseEnv(t)
+	for _, command := range []string{"run", "acquire"} {
+		for _, flags := range [][]string{{"--slots", "0"}, {"--slots", "-2"}, {"--wait", "-1s"}} {
+			args := append([]string{command, "db"}, flags...)
+			if command == "run" {
+				args = append(args, "--", "/bin/echo", "unexpected")
+			}
+			out, stderr, code := runLease(t, env, 5*time.Second, args...)
+			if code != 2 || strings.Contains(out, "unexpected") {
+				t.Fatalf("%v: exit %d, output %q, stderr %q", args, code, out, stderr)
+			}
+		}
+	}
+}
+
+func TestHistoryLockHonorsDeadlineAndCancellation(t *testing.T) {
+	dir, env := leaseEnv(t)
+	history, err := os.OpenFile(filepath.Join(dir, "events.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer history.Close()
+	if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+	for _, command := range []string{"run", "acquire"} {
+		args := []string{command, "db", "--wait", "100ms"}
+		if command == "run" {
+			args = append(args, "--", "/bin/echo", "unexpected")
+		}
+		start := time.Now()
+		out, stderr, code := runLease(t, env, 3*time.Second, args...)
+		if code != 75 || time.Since(start) > 2*time.Second || strings.Contains(out, "unexpected") {
+			t.Fatalf("%v: exit %d, output %q, stderr %q", args, code, out, stderr)
+		}
+		used, err := lock.Probe(dir, "db", 1)
+		if err != nil || used {
+			t.Fatalf("partial lock survived: %v %v", used, err)
+		}
+	}
+	cmd := exec.Command(leaseBin, "run", "a", "b", "--", "/bin/echo", "unexpected")
+	cmd.Env = env
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	waitForHolder(t, env, "a")
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SIGTERM did not interrupt history lock")
+	}
+	for _, name := range []string{"a", "b"} {
+		used, err := lock.Probe(dir, name, 1)
+		if err != nil || used {
+			t.Fatalf("%s still held: %v %v", name, used, err)
+		}
 	}
 }

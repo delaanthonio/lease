@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -24,9 +24,6 @@ import (
 //	events.ndjson                    append-only history, one JSON per line
 type FileStore struct {
 	root string
-
-	// events.mu guards appends so concurrent writers produce whole lines.
-	eventsMu sync.Mutex
 }
 
 // NewFileStore returns a FileStore rooted at dir. The directory is created
@@ -218,11 +215,15 @@ func (s *FileStore) DropWaiter(id string) error {
 }
 
 func (s *FileStore) AppendEvent(e Event) error {
+	return s.AppendEventContext(context.Background(), e)
+}
+
+func (s *FileStore) AppendEventContext(ctx context.Context, e Event) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
-	s.eventsMu.Lock()
-	defer s.eventsMu.Unlock()
 	if err := paths.MkdirAll(s.root); err != nil {
 		return err
 	}
@@ -231,8 +232,24 @@ func (s *FileStore) AppendEvent(e Event) error {
 		return err
 	}
 	defer lf.Close()
-	if err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
-		return err
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			return err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 	if paths.Shared {

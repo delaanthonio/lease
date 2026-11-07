@@ -565,3 +565,27 @@ func TestDeadlineCoversRecordingBetweenResources(t *testing.T) {
 		t.Fatalf("unexpected failure: %v", err)
 	}
 }
+
+func TestDeadlineRecheckedAfterRecordingLastResource(t *testing.T) {
+	f := newFixture(t)
+	base := time.Unix(1000, 0)
+	now := base
+	opts := f.options()
+	opts.Wait = time.Second
+	opts.Now = func() time.Time { return now }
+	opts.Store = &eventHookStore{Store: f.store, hook: func(e store.Event) {
+		if e.Kind == store.EventAcquire {
+			now = base.Add(2 * time.Second)
+		}
+	}}
+	acq, err := opts.Acquire([]string{"db"})
+	if err == nil {
+		acq.Release()
+		t.Fatal("acquisition succeeded after the deadline")
+	}
+	busyResource(t, err)
+	used, err := lock.Probe(f.stateDir, "db", 1)
+	if err != nil || used {
+		t.Fatalf("expired acquisition retained lock: %v %v", used, err)
+	}
+}

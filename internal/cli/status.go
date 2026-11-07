@@ -233,15 +233,14 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 	leaseOpts, err := opts.prepare(stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
+		if errors.Is(err, errInvalidOptions) {
+			return exitUsage
+		}
 		return 1
 	}
 
 	if err := lease.ValidateNames(names); err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitUsage
-	}
-	if opts.Slots < 1 {
-		fmt.Fprintln(stderr, "lease: slots must be positive")
 		return exitUsage
 	}
 	for _, name := range names {

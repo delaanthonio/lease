@@ -83,8 +83,16 @@ func (r *RunOptions) register(fs *flag.FlagSet) {
 	fs.StringVar(&r.Config, "config", "", "path to the config file (default: $LEASE_CONFIG or the user config dir)")
 }
 
+var errInvalidOptions = errors.New("invalid acquisition options")
+
 // prepare resolves the shared machinery behind run and acquire.
 func (r *RunOptions) prepare(stderr io.Writer) (*lease.Options, error) {
+	if r.Slots <= 0 {
+		return nil, fmt.Errorf("%w: --slots must be positive", errInvalidOptions)
+	}
+	if r.Wait < 0 {
+		return nil, fmt.Errorf("%w: --wait must not be negative", errInvalidOptions)
+	}
 	cfgPath := r.Config
 	if cfgPath == "" {
 		cfgPath = paths.ConfigFile(os.LookupEnv)
@@ -145,6 +153,9 @@ func RunCommand(argv []string, stdout, stderr io.Writer) int {
 	opts, err := opts0.prepare(stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
+		if errors.Is(err, errInvalidOptions) {
+			return exitUsage
+		}
 		return 1
 	}
 	opts.Command = filepath.Base(cmdArgs[0])

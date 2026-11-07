@@ -120,6 +120,7 @@ type unit struct {
 
 // Acquired holds everything taken by a successful Acquire.
 type Acquired struct {
+	ctx    context.Context
 	opts   *Options
 	units  []unit
 	files  map[unit]*os.File
@@ -135,6 +136,27 @@ func ValidateNames(names []string) error {
 		}
 	}
 	return nil
+}
+
+func (o *Options) acquisitionContext() (context.Context, context.CancelFunc) {
+	ctx := o.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if o.Wait > time.Nanosecond {
+		return context.WithTimeout(ctx, o.Wait)
+	}
+	return context.WithCancel(ctx)
+}
+
+func (o *Options) acquisitionError(a *Acquired, resource string, deadline time.Time, err error) error {
+	if a.ctx.Err() == context.Canceled {
+		return context.Canceled
+	}
+	if a.ctx.Err() == context.DeadlineExceeded || (o.Wait > time.Nanosecond && !deadline.IsZero() && !o.now().Before(deadline)) {
+		return o.busyAt(resource)
+	}
+	return err
 }
 
 // Acquire takes the requested slots of every named resource, in fixed
@@ -157,7 +179,10 @@ func (o *Options) Acquire(names []string) (*Acquired, error) {
 		}
 	}
 
+	ctx, cancel := o.acquisitionContext()
+	defer cancel()
 	a := &Acquired{
+		ctx:    ctx,
 		opts:   o,
 		files:  map[unit]*os.File{},
 		waiter: map[string]string{},
@@ -167,8 +192,18 @@ func (o *Options) Acquire(names []string) (*Acquired, error) {
 		deadline = o.now().Add(o.Wait)
 	}
 	for _, resource := range sorted {
-		if err := o.acquireResource(a, resource, deadline); err != nil {
-			a.Release()
+		err := o.acquireResource(a, resource, deadline)
+		if err != nil {
+			err = o.acquisitionError(a, resource, deadline, err)
+			cancel()
+			a.release(ctx)
+			return nil, err
+		}
+	}
+	if len(sorted) > 0 {
+		if err := o.acquisitionError(a, sorted[len(sorted)-1], deadline, nil); err != nil {
+			cancel()
+			a.release(ctx)
 			return nil, err
 		}
 	}
@@ -182,7 +217,10 @@ func (o *Options) AcquireOne(resource string) (*Acquired, error) {
 	if err := ValidateNames([]string{resource}); err != nil {
 		return nil, err
 	}
+	ctx, cancel := o.acquisitionContext()
+	defer cancel()
 	a := &Acquired{
+		ctx:    ctx,
 		opts:   o,
 		files:  map[unit]*os.File{},
 		waiter: map[string]string{},
@@ -191,8 +229,11 @@ func (o *Options) AcquireOne(resource string) (*Acquired, error) {
 	if o.Wait > 0 {
 		deadline = o.now().Add(o.Wait)
 	}
-	if err := o.acquireResource(a, resource, deadline); err != nil {
-		a.Release()
+	err := o.acquireResource(a, resource, deadline)
+	err = o.acquisitionError(a, resource, deadline, err)
+	if err != nil {
+		cancel()
+		a.release(ctx)
 		return nil, err
 	}
 	return a, nil
@@ -212,8 +253,8 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 			return o.busyAt(resource)
 		}
 		first = false
-		if o.Context != nil && o.Context.Err() != nil {
-			return o.Context.Err()
+		if err := a.ctx.Err(); err != nil {
+			return err
 		}
 		// Tentatively lock free slots until the wanted count is reached.
 		var taken []unit
@@ -245,11 +286,14 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 			}
 			a.units = append(a.units, taken...)
 			for _, u := range taken {
-				o.resolveExistingRecord(u)
+				o.resolveExistingRecord(a, u)
+				if err := a.ctx.Err(); err != nil {
+					return err
+				}
 				if err := o.recordHolder(u); err != nil {
 					return err
 				}
-				if err := o.Store.AppendEvent(store.Event{At: o.now().UTC(), Kind: store.EventAcquire, Resource: u.resource, Slot: u.slot, Actor: o.Identity.Label(), Detail: o.Command}); err != nil {
+				if err := store.AppendEventContext(a.ctx, o.Store, store.Event{At: o.now().UTC(), Kind: store.EventAcquire, Resource: u.resource, Slot: u.slot, Actor: o.Identity.Label(), Detail: o.Command}); err != nil {
 					return err
 				}
 			}
@@ -259,8 +303,8 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 		a.dropTentative(taken)
 		a.waited = true
 		if !o.waitRound(a, resource, deadline) {
-			if o.Context != nil && o.Context.Err() != nil {
-				return o.Context.Err()
+			if err := a.ctx.Err(); err != nil {
+				return err
 			}
 			return o.busyAt(resource)
 		}
@@ -283,30 +327,30 @@ func (a *Acquired) dropTentative(taken []unit) {
 // taken. A stale record (its process is gone) or an expired one is logged
 // as a takeover; a record naming a live process on a free slot is an
 // inconsistency the new holder resolves, also logged.
-func (o *Options) resolveExistingRecord(u unit) {
+func (o *Options) resolveExistingRecord(a *Acquired, u unit) {
 	holder, err := o.Store.Holder(u.resource, u.slot)
 	if err != nil || holder == nil {
 		return
 	}
 	switch {
 	case o.ttlExpired(holder):
-		o.recordTakeover(u, holder, store.EventTTLExpire, "TTL elapsed and holder unresponsive")
+		o.recordTakeover(a, u, holder, store.EventTTLExpire, "TTL elapsed and holder unresponsive")
 		o.note("slot %d of %q was held past its TTL by %s and is unresponsive; taking over",
 			u.slot, u.resource, DescribeHolder(holder))
 	case holderStale(holder):
-		o.recordTakeover(u, holder, store.EventTakeover, "holder process is gone")
+		o.recordTakeover(a, u, holder, store.EventTakeover, "holder process is gone")
 		o.note("slot %d of %q had a stale holder (%s); taking over",
 			u.slot, u.resource, DescribeHolder(holder))
 	default:
-		o.recordTakeover(u, holder, store.EventTakeover, "holder record present but slot lock free")
+		o.recordTakeover(a, u, holder, store.EventTakeover, "holder record present but slot lock free")
 	}
 }
 
 // recordTakeover clears a leftover holder record and appends the takeover
 // event.
-func (o *Options) recordTakeover(u unit, holder *store.Holder, kind, reason string) {
+func (o *Options) recordTakeover(a *Acquired, u unit, holder *store.Holder, kind, reason string) {
 	_ = o.Store.ClearHolder(u.resource, u.slot)
-	if err := o.Store.AppendEvent(store.Event{
+	if err := store.AppendEventContext(a.ctx, o.Store, store.Event{
 		At: o.now().UTC(), Kind: kind,
 		Resource: u.resource, Slot: u.slot,
 		Actor: o.Identity.Label(), Reason: reason,
@@ -338,7 +382,7 @@ func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bo
 			}
 			if err := o.Store.EnqueueWaiter(ticket); err == nil {
 				a.waiter[resource] = id
-				if err := o.Store.AppendEvent(store.Event{
+				if err := store.AppendEventContext(a.ctx, o.Store, store.Event{
 					At: o.now().UTC(), Kind: store.EventWait,
 					Resource: resource, Actor: o.Identity.Label(),
 				}); err != nil {
@@ -359,12 +403,8 @@ func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bo
 	if delay <= 0 {
 		return false
 	}
-	if o.Context == nil {
-		time.Sleep(delay)
-		return true
-	}
 	select {
-	case <-o.Context.Done():
+	case <-a.ctx.Done():
 		return false
 	case <-time.After(delay):
 		return true
@@ -416,9 +456,18 @@ func (o *Options) recordHolder(u unit) error {
 // Release drops holder records, releases the kernel locks, and clears
 // waiter tickets. It is safe to call more than once.
 func (a *Acquired) Release() {
+	ctx := context.Background()
+	if a != nil && a.opts.Context != nil {
+		ctx = a.opts.Context
+	}
+	a.release(ctx)
+}
+
+func (a *Acquired) release(ctx context.Context) {
 	if a == nil {
 		return
 	}
+	var released []unit
 	for _, u := range a.units {
 		f, ok := a.files[u]
 		if !ok {
@@ -438,7 +487,10 @@ func (a *Acquired) Release() {
 			}
 			_ = probe.Close()
 		}
-		if err := a.opts.Store.AppendEvent(store.Event{
+		released = append(released, u)
+	}
+	for _, u := range released {
+		if err := store.AppendEventContext(ctx, a.opts.Store, store.Event{
 			At:       a.opts.now().UTC(),
 			Kind:     store.EventRelease,
 			Resource: u.resource,
