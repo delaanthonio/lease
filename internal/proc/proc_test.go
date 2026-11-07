@@ -56,6 +56,29 @@ func TestPidsOutsidePidTRangeAreInvalid(t *testing.T) {
 	}
 }
 
+// TestFingerprintIgnoresCallerTimeZoneAndLocale pins the fingerprint's
+// stability: the ps invocation pins its own time zone and locale, so the
+// same process yields the same fingerprint no matter what environment the
+// caller runs in.
+func TestFingerprintIgnoresCallerTimeZoneAndLocale(t *testing.T) {
+	pid := os.Getpid()
+	first := Fingerprint(pid)
+	if first == "" {
+		t.Fatal("own pid has no fingerprint")
+	}
+	for _, env := range []struct{ tz, lc string }{
+		{"Asia/Tokyo", "ja_JP.UTF-8"},
+		{"America/Los_Angeles", "de_DE.UTF-8"},
+		{"Pacific/Kiritimati", "C"},
+	} {
+		t.Setenv("TZ", env.tz)
+		t.Setenv("LC_ALL", env.lc)
+		if fp := Fingerprint(pid); fp != first {
+			t.Fatalf("fingerprint changed under TZ=%s LC_ALL=%s: %q vs %q", env.tz, env.lc, fp, first)
+		}
+	}
+}
+
 func TestFingerprintChangesForNewProcess(t *testing.T) {
 	// A short-lived child gets one fingerprint; a second child on the same
 	// pid slot is not guaranteed, so instead assert a finished process has
