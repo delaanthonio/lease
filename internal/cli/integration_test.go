@@ -118,9 +118,11 @@ func TestCommandHelp(t *testing.T) {
 			t.Errorf("%v unexpectedly succeeded", args)
 		}
 	}
-	out, _, code := runLease(t, env, 5*time.Second, "run", "db", "--", "/bin/echo", "--help")
-	if code != 0 || strings.TrimSpace(out) != "--help" {
-		t.Fatalf("child help argument: code=%d stdout=%q", code, out)
+	for _, help := range []string{"-h", "--help"} {
+		out, _, code := runLease(t, env, 5*time.Second, "run", "db", "--", "/bin/sh", "-c", `printf '%s\n' "$1"`, "sh", help)
+		if code != 0 || strings.TrimSpace(out) != help {
+			t.Fatalf("child help argument %q: code=%d stdout=%q", help, code, out)
+		}
 	}
 }
 
