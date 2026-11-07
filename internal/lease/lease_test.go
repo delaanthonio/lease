@@ -589,3 +589,38 @@ func TestDeadlineRecheckedAfterRecordingLastResource(t *testing.T) {
 		t.Fatalf("expired acquisition retained lock: %v %v", used, err)
 	}
 }
+
+func TestSharedTakeoverOmitsPrivateCommand(t *testing.T) {
+	previous := paths.Shared
+	defer func() { paths.Shared = previous }()
+	paths.Shared = true
+	f := newFixture(t)
+	h := &store.Holder{Resource: "db", Slot: 1, PID: 99999999, Command: "tool private-secret"}
+	if err := f.store.SetHolder(h); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	opts := f.options()
+	opts.Note = func(format string, args ...any) { notes = append(notes, fmt.Sprintf(format, args...)) }
+	acquired, err := opts.Acquire([]string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acquired.Release()
+	events, err := f.store.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == store.EventTakeover {
+			found = true
+			if strings.Contains(event.Detail, "private-secret") {
+				t.Fatalf("private command in event: %+v", event)
+			}
+		}
+	}
+	if !found || strings.Contains(strings.Join(notes, " "), "private-secret") {
+		t.Fatalf("takeover notes or event: %v %+v", notes, events)
+	}
+}

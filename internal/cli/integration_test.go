@@ -847,3 +847,44 @@ func TestStaleManualReleaseSkipsBusyHistory(t *testing.T) {
 		t.Fatalf("stale holder survived: %+v %v", h, err)
 	}
 }
+
+func TestForceReleaseKeepsHolderWhenHistoryLocked(t *testing.T) {
+	dir, env := leaseEnv(t)
+	st := store.NewFileStore(dir)
+	h := &store.Holder{Resource: "db", Slot: 1, PID: 99999999}
+	if err := st.SetHolder(h); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "events.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_, stderr, code := runLease(t, env, 5*time.Second, "force-release", "db", "--reason", "repair")
+	if code == 0 || !strings.Contains(stderr, "record force-release reason") {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	got, err := st.Holder("db", 1)
+	if err != nil || got == nil || *got != *h {
+		t.Fatalf("holder changed: %+v %v", got, err)
+	}
+}
+
+func TestNamedStatusPrunesExpiredHistory(t *testing.T) {
+	dir, env := leaseEnv(t)
+	raw, _ := json.Marshal(store.Event{At: time.Now().Add(-31 * 24 * time.Hour), Kind: store.EventAcquire, Detail: "expired-secret"})
+	if err := os.WriteFile(filepath.Join(dir, "events.ndjson"), append(raw, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := runLease(t, env, 5*time.Second, "status", "db")
+	if code != 0 {
+		t.Fatalf("status exit=%d: %s", code, stderr)
+	}
+	if data := readFile(t, filepath.Join(dir, "events.ndjson")); strings.Contains(data, "expired-secret") {
+		t.Fatalf("expired history retained: %s", data)
+	}
+}

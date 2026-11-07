@@ -298,3 +298,28 @@ func TestSharedModeRefusesPrivateHistory(t *testing.T) {
 		t.Fatalf("private history changed: %+v %v", events, err)
 	}
 }
+
+func TestHistoryReadPrunesExpiredAndExcessEvents(t *testing.T) {
+	st := NewFileStore(t.TempDir())
+	var lines strings.Builder
+	for i := 0; i < 1002; i++ {
+		at := time.Now()
+		if i == 0 {
+			at = at.Add(-31 * 24 * time.Hour)
+		}
+		raw, _ := json.Marshal(Event{At: at, Kind: EventAcquire, Detail: fmt.Sprint(i)})
+		lines.Write(raw)
+		lines.WriteByte('\n')
+	}
+	if err := os.WriteFile(st.eventsPath(), []byte(lines.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.Events()
+	if err != nil || len(events) != 1000 || events[0].Detail != "2" {
+		t.Fatalf("events: %d %v", len(events), err)
+	}
+	raw, err := os.ReadFile(st.eventsPath())
+	if err != nil || strings.Count(string(raw), "\n") != 1000 {
+		t.Fatalf("persisted history: %v", err)
+	}
+}

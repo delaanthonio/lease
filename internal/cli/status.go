@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,11 +41,18 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	st := store.NewFileStore(stateDir(cfg))
+	if len(names) > 0 {
+		if _, err := st.Events(); err != nil {
+			fmt.Fprintf(stderr, "lease: %s\n", err)
+			return 1
+		}
+	}
+
 	// Named resources only, or every resource that exists on the machine.
 	resources := names
 	if len(resources) == 0 {
-		fst := store.NewFileStore(stateDir(cfg))
-		existing, err := fst.Resources()
+		existing, err := st.Resources()
 		if err != nil {
 			fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
@@ -58,7 +66,7 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 	}
 
 	stateDir := stateDir(cfg)
-	views, err := lease.Inspect(stateDir, store.NewFileStore(stateDir), cfg, resources)
+	views, err := lease.Inspect(stateDir, st, cfg, resources)
 	if err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
@@ -179,25 +187,24 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 				h.Slot, name, lease.DescribeHolder(&h))
 			continue
 		}
-		prev := lease.DescribeHolder(&h)
-		cleared, err := clearObserved(st, dir, &h)
+		prev := lease.DescribeHolderForHistory(&h)
+		cleared, err := clearObservedWith(st, dir, &h, func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := st.AppendEventContext(ctx, store.Event{
+				Kind: store.EventForceRelease, Resource: name, Slot: h.Slot,
+				Actor: identityFromEnv().Label(), Reason: *reason, Detail: "previous holder: " + prev,
+			}, false); err != nil {
+				return fmt.Errorf("record force-release reason: %w", err)
+			}
+			return nil
+		})
 		if err != nil {
 			fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
 		}
 		if !cleared {
 			continue
-		}
-		if err := st.AppendEvent(store.Event{
-			Kind:     store.EventForceRelease,
-			Resource: name,
-			Slot:     h.Slot,
-			Actor:    identityFromEnv().Label(),
-			Reason:   *reason,
-			Detail:   "previous holder: " + prev,
-		}); err != nil {
-			fmt.Fprintf(stderr, "lease: %s\n", err)
-			return 1
 		}
 		fmt.Fprintf(stdout, "cleared stale holder of slot %d: %s\n", h.Slot, prev)
 	}
@@ -314,6 +321,10 @@ func ReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 }
 
 func clearObserved(st store.Store, dir string, observed *store.Holder) (bool, error) {
+	return clearObservedWith(st, dir, observed, nil)
+}
+
+func clearObservedWith(st store.Store, dir string, observed *store.Holder, beforeClear func() error) (bool, error) {
 	f, err := lock.OpenSlot(dir, observed.Resource, observed.Slot)
 	if err != nil {
 		return false, err
@@ -327,6 +338,11 @@ func clearObserved(st store.Store, dir string, observed *store.Holder) (bool, er
 	current, err := st.Holder(observed.Resource, observed.Slot)
 	if err != nil || current == nil || *current != *observed {
 		return false, err
+	}
+	if beforeClear != nil {
+		if err := beforeClear(); err != nil {
+			return false, err
+		}
 	}
 	return true, st.ClearHolder(observed.Resource, observed.Slot)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/delaanthonio/lease/internal/config"
 	"github.com/delaanthonio/lease/internal/identity"
 	"github.com/delaanthonio/lease/internal/lock"
+	"github.com/delaanthonio/lease/internal/paths"
 	"github.com/delaanthonio/lease/internal/proc"
 	"github.com/delaanthonio/lease/internal/store"
 )
@@ -337,11 +338,11 @@ func (o *Options) resolveExistingRecord(a *Acquired, u unit) {
 	case o.ttlExpired(holder):
 		o.recordTakeover(a, u, holder, store.EventTTLExpire, "TTL elapsed and holder unresponsive")
 		o.note("slot %d of %q was held past its TTL by %s and is unresponsive; taking over",
-			u.slot, u.resource, DescribeHolder(holder))
+			u.slot, u.resource, DescribeHolderForHistory(holder))
 	case holderStale(holder):
 		o.recordTakeover(a, u, holder, store.EventTakeover, "holder process is gone")
 		o.note("slot %d of %q had a stale holder (%s); taking over",
-			u.slot, u.resource, DescribeHolder(holder))
+			u.slot, u.resource, DescribeHolderForHistory(holder))
 	default:
 		o.recordTakeover(a, u, holder, store.EventTakeover, "holder record present but slot lock free")
 	}
@@ -355,7 +356,7 @@ func (o *Options) recordTakeover(a *Acquired, u unit, holder *store.Holder, kind
 		At: o.now().UTC(), Kind: kind,
 		Resource: u.resource, Slot: u.slot,
 		Actor: o.Identity.Label(), Reason: reason,
-		Detail: DescribeHolder(holder),
+		Detail: DescribeHolderForHistory(holder),
 	}, true); err != nil && !errors.Is(err, store.ErrHistoryBusy) {
 		o.note("record takeover: %s", err)
 	}
@@ -592,6 +593,15 @@ func DescribeHolder(h *store.Holder) string {
 		parts = append(parts, h.Command)
 	}
 	return strings.Join(parts, " ")
+}
+
+func DescribeHolderForHistory(h *store.Holder) string {
+	if paths.Shared {
+		copy := *h
+		copy.Command = ""
+		return DescribeHolder(&copy)
+	}
+	return DescribeHolder(h)
 }
 
 // randomID returns a random file-safe identifier with the given prefix.

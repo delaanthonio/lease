@@ -264,11 +264,19 @@ func (s *FileStore) AppendEventContext(ctx context.Context, e Event, noWait bool
 			return fmt.Errorf("private history cannot be used in shared mode; choose a new shared state directory")
 		}
 	}
-	events, err := s.Events()
+	events, err := s.readEvents()
 	if err != nil {
 		return err
 	}
 	events = append(events, e)
+	return s.writeEvents(events)
+}
+
+func (s *FileStore) writeEvents(events []Event) error {
+	return s.writeEventsMode(retainedEvents(events), paths.FileMode())
+}
+
+func retainedEvents(events []Event) []Event {
 	cutoff := time.Now().Add(-30 * 24 * time.Hour)
 	kept := events[:0]
 	for _, event := range events {
@@ -279,6 +287,10 @@ func (s *FileStore) AppendEventContext(ctx context.Context, e Event, noWait bool
 	if len(kept) > 1000 {
 		kept = kept[len(kept)-1000:]
 	}
+	return kept
+}
+
+func (s *FileStore) writeEventsMode(kept []Event, mode os.FileMode) error {
 	var b strings.Builder
 	for _, event := range kept {
 		raw, err := json.Marshal(event)
@@ -288,10 +300,45 @@ func (s *FileStore) AppendEventContext(ctx context.Context, e Event, noWait bool
 		b.Write(raw)
 		b.WriteByte('\n')
 	}
-	return writeFileSync(s.eventsPath(), []byte(b.String()))
+	return writeFileSyncMode(s.eventsPath(), []byte(b.String()), mode)
 }
 
 func (s *FileStore) Events() ([]Event, error) {
+	events, err := s.readEvents()
+	if err != nil {
+		return nil, err
+	}
+	kept := retainedEvents(append([]Event(nil), events...))
+	if len(kept) == len(events) {
+		return kept, nil
+	}
+	lf, err := paths.OpenFile(filepath.Join(s.root, "events.lock"))
+	if err != nil {
+		return nil, err
+	}
+	defer lf.Close()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return nil, ErrHistoryBusy
+	}
+	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	events, err = s.readEvents()
+	if err != nil {
+		return nil, err
+	}
+	kept = retainedEvents(append([]Event(nil), events...))
+	if len(kept) != len(events) {
+		info, err := os.Stat(s.eventsPath())
+		if err != nil {
+			return nil, err
+		}
+		if err := s.writeEventsMode(kept, info.Mode().Perm()); err != nil {
+			return nil, err
+		}
+	}
+	return kept, nil
+}
+
+func (s *FileStore) readEvents() ([]Event, error) {
 	raw, err := os.ReadFile(s.eventsPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -356,11 +403,15 @@ func (s *FileStore) Resources() ([]string, error) {
 // writeFileSync writes the file atomically: temp file, flush, rename, so a
 // reader never sees a half-written record.
 func writeFileSync(path string, raw []byte) error {
+	return writeFileSyncMode(path, raw, paths.FileMode())
+}
+
+func writeFileSyncMode(path string, raw []byte, mode os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
 	}
-	if err := tmp.Chmod(paths.FileMode()); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err
