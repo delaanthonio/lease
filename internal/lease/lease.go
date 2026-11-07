@@ -293,7 +293,7 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 				if err := o.recordHolder(u); err != nil {
 					return err
 				}
-				if err := store.AppendEventContext(a.ctx, o.Store, store.Event{At: o.now().UTC(), Kind: store.EventAcquire, Resource: u.resource, Slot: u.slot, Actor: o.Identity.Label(), Detail: o.Command}); err != nil {
+				if err := store.AppendEventContext(a.ctx, o.Store, store.Event{At: o.now().UTC(), Kind: store.EventAcquire, Resource: u.resource, Slot: u.slot, Actor: o.Identity.Label(), Detail: o.Command}, o.Wait == time.Nanosecond); err != nil {
 					return err
 				}
 			}
@@ -355,7 +355,7 @@ func (o *Options) recordTakeover(a *Acquired, u unit, holder *store.Holder, kind
 		Resource: u.resource, Slot: u.slot,
 		Actor: o.Identity.Label(), Reason: reason,
 		Detail: DescribeHolder(holder),
-	}); err != nil {
+	}, o.Wait == time.Nanosecond); err != nil {
 		o.note("record takeover: %s", err)
 	}
 }
@@ -385,7 +385,7 @@ func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bo
 				if err := store.AppendEventContext(a.ctx, o.Store, store.Event{
 					At: o.now().UTC(), Kind: store.EventWait,
 					Resource: resource, Actor: o.Identity.Label(),
-				}); err != nil {
+				}, o.Wait == time.Nanosecond); err != nil {
 					o.note("record wait: %s", err)
 				}
 			}
@@ -496,7 +496,7 @@ func (a *Acquired) release(ctx context.Context) {
 			Resource: u.resource,
 			Slot:     u.slot,
 			Actor:    a.opts.Identity.Label(),
-		}); err != nil {
+		}, a.opts.Wait == time.Nanosecond); err != nil {
 			a.opts.note("record release: %s", err)
 		}
 	}

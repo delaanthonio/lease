@@ -104,11 +104,11 @@ type Store interface {
 	Resources() ([]string, error)
 }
 
-func AppendEventContext(ctx context.Context, st Store, event Event) error {
+func AppendEventContext(ctx context.Context, st Store, event Event, noWait bool) error {
 	if contextual, ok := st.(interface {
-		AppendEventContext(context.Context, Event) error
+		AppendEventContext(context.Context, Event, bool) error
 	}); ok {
-		return contextual.AppendEventContext(ctx, event)
+		return contextual.AppendEventContext(ctx, event, noWait)
 	}
 	if err := ctx.Err(); err != nil {
 		return err

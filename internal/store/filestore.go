@@ -215,10 +215,10 @@ func (s *FileStore) DropWaiter(id string) error {
 }
 
 func (s *FileStore) AppendEvent(e Event) error {
-	return s.AppendEventContext(context.Background(), e)
+	return s.AppendEventContext(context.Background(), e, false)
 }
 
-func (s *FileStore) AppendEventContext(ctx context.Context, e Event) error {
+func (s *FileStore) AppendEventContext(ctx context.Context, e Event, noWait bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if e.At.IsZero() {
@@ -242,6 +242,9 @@ func (s *FileStore) AppendEventContext(ctx context.Context, e Event) error {
 		}
 		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
 			return err
+		}
+		if noWait {
+			return fmt.Errorf("history lock is busy")
 		}
 		timer := time.NewTimer(10 * time.Millisecond)
 		select {
