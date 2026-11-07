@@ -209,7 +209,7 @@ func TestWaitTimeoutReleasesPartialAcquisition(t *testing.T) {
 	cfg := &config.Config{Resources: map[string]config.Resource{"a": {Slots: 1}}}
 	holder := f.options()
 	holder.Config = cfg
-	acq, err := holder.Acquire([]string{"a"})
+	acq, err := holder.Acquire([]string{"b"})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -222,13 +222,17 @@ func TestWaitTimeoutReleasesPartialAcquisition(t *testing.T) {
 	waiter.Wait = 100 * time.Millisecond
 	_, err = waiter.Acquire([]string{"a", "b"})
 	busy := busyResource(t, err)
-	if busy.Resource != "a" {
-		t.Fatalf("busy resource = %q, want a (sorted order puts a first)", busy.Resource)
+	if busy.Resource != "b" {
+		t.Fatalf("busy resource = %q, want b", busy.Resource)
 	}
-	if h, _ := f.store.Holder("b", 1); h != nil {
-		t.Fatalf("partial acquisition of b survived: %+v", h)
+	probe := f.options()
+	probe.Wait = time.Nanosecond
+	free, err := probe.Acquire([]string{"a"})
+	if err != nil {
+		t.Fatalf("partial acquisition of a survived: %v", err)
 	}
-	if w, _ := f.store.Waiters("a"); len(w) != 0 {
+	free.Release()
+	if w, _ := f.store.Waiters("b"); len(w) != 0 {
 		t.Fatalf("waiter tickets survived the timeout: %+v", w)
 	}
 }

@@ -21,11 +21,11 @@ func Dir(root, resource string) string {
 // resource. The caller is responsible for closing the file.
 func OpenSlot(root, resource string, slot int) (*os.File, error) {
 	dir := Dir(root, resource)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, fmt.Sprintf("slot-%d.lock", slot))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}

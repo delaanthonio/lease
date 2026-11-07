@@ -29,7 +29,7 @@ Binaries are built for macOS (arm64) and Linux (amd64, arm64). Or build from
 source with Go 1.25 or newer:
 
 ```sh
-go install github.com/delaanthonio/lease@latest
+go install github.com/delaanthonio/lease/cmd/lease@latest
 ```
 
 ## Quick start

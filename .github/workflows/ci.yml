@@ -36,7 +36,13 @@ jobs:
           export LEASE_STATE_DIR="$RUNNER_TEMP/lease-state"
           "$RUNNER_TEMP/lease" version
           "$RUNNER_TEMP/lease" config
-          "$RUNNER_TEMP/lease" run smoke -- echo ok
+          "$RUNNER_TEMP/lease" run smoke -- sh -c 'touch "$RUNNER_TEMP/lease-ready"; sleep 30' &
+          holder=$!
+          trap 'kill "$holder" 2>/dev/null || true' EXIT
+          while [ ! -f "$RUNNER_TEMP/lease-ready" ]; do
+            kill -0 "$holder"
+            sleep 0.1
+          done
           if "$RUNNER_TEMP/lease" run smoke --no-wait -- echo nope; then
             echo "busy run unexpectedly succeeded"
             exit 1

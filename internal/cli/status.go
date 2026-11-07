@@ -6,10 +6,10 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/delaanthonio/lease/internal/lease"
+	"github.com/delaanthonio/lease/internal/lock"
 	"github.com/delaanthonio/lease/internal/paths"
 	"github.com/delaanthonio/lease/internal/proc"
 	"github.com/delaanthonio/lease/internal/store"
@@ -165,9 +165,13 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		prev := lease.DescribeHolder(&h)
-		if err := st.ClearHolder(name, h.Slot); err != nil {
+		cleared, err := clearObserved(st, paths.StateDir(os.LookupEnv), &h)
+		if err != nil {
 			fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
+		}
+		if !cleared {
+			continue
 		}
 		if err := st.AppendEvent(store.Event{
 			Kind:     store.EventForceRelease,
@@ -216,7 +220,7 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	command := "lease acquire " + strings.Join(names, " ")
+	command := "lease"
 	var releases []func()
 	var tokens []string
 	for _, name := range names {
@@ -303,4 +307,22 @@ func ReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func clearObserved(st store.Store, dir string, observed *store.Holder) (bool, error) {
+	f, err := lock.OpenSlot(dir, observed.Resource, observed.Slot)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	ok, err := lock.TryLock(f)
+	if err != nil || !ok {
+		return false, err
+	}
+	defer lock.Unlock(f)
+	current, err := st.Holder(observed.Resource, observed.Slot)
+	if err != nil || current == nil || *current != *observed {
+		return false, err
+	}
+	return true, st.ClearHolder(observed.Resource, observed.Slot)
 }

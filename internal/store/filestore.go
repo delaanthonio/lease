@@ -125,7 +125,7 @@ func (s *FileStore) SetHolder(h *Holder) error {
 		return fmt.Errorf("invalid resource name %q", h.Resource)
 	}
 	path := s.holderPath(h.Resource, h.Slot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(h)
@@ -176,7 +176,7 @@ func (s *FileStore) EnqueueWaiter(w *Waiter) error {
 		return fmt.Errorf("invalid resource name %q", w.Resource)
 	}
 	path := s.waiterPath(w.Resource, w.ID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(w)
@@ -219,7 +219,7 @@ func (s *FileStore) AppendEvent(e Event) error {
 	}
 	s.eventsMu.Lock()
 	defer s.eventsMu.Unlock()
-	f, err := os.OpenFile(s.eventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(s.eventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}

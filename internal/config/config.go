@@ -23,12 +23,14 @@ type Resource struct {
 type Config struct {
 	// Path is the file the configuration came from, or "" when defaults
 	// only were used.
-	Path      string
-	Resources map[string]Resource
+	Path          string
+	Resources     map[string]Resource
+	RecordCommand bool
 }
 
 type file struct {
-	Resources map[string]Resource `toml:"resources"`
+	RecordCommand bool                `toml:"record_command"`
+	Resources     map[string]Resource `toml:"resources"`
 }
 
 // Load reads the config file at path. A missing file is not an error: the
@@ -52,6 +54,7 @@ func Load(path string) (*Config, error) {
 		}
 		cfg.Resources[name] = r
 	}
+	cfg.RecordCommand = f.RecordCommand
 	cfg.Path = path
 	return cfg, nil
 }

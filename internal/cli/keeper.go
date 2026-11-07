@@ -230,7 +230,7 @@ func releaseToken(token string) error {
 		if h.Token == "" || h.Token != token {
 			continue
 		}
-		if proc.Alive(h.PID) {
+		if h.ProcStart != "" && proc.HolderIsStale(h.PID, h.ProcStart) == nil {
 			if err := syscall.Kill(h.PID, syscall.SIGTERM); err != nil {
 				return err
 			}
@@ -238,15 +238,19 @@ func releaseToken(token string) error {
 			deadline := time.Now().Add(5 * time.Second)
 			for time.Now().Before(deadline) {
 				cur, err := st.Holder(h.Resource, h.Slot)
-				if err == nil && cur == nil {
+				if err == nil && (cur == nil || cur.Token != h.Token) {
 					return nil
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
 		}
 		// The keeper is gone: clear the stale record directly.
-		if err := st.ClearHolder(h.Resource, h.Slot); err != nil {
+		cleared, err := clearObserved(st, paths.StateDir(os.LookupEnv), &h)
+		if err != nil {
 			return err
+		}
+		if !cleared {
+			return fmt.Errorf("holder is still active or has changed")
 		}
 		_ = st.AppendEvent(store.Event{
 			Kind:     store.EventRelease,

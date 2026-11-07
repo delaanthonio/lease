@@ -5,6 +5,7 @@
 package lease
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -45,6 +46,7 @@ func (e *BusyError) Error() string {
 
 // Options configures one acquisition.
 type Options struct {
+	Context context.Context
 	// StateDir is the machine-wide directory holding lock and metadata files.
 	StateDir string
 	// Store holds holder records, waiter tickets, and history.
@@ -239,7 +241,6 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 				continue
 			}
 			f.Close()
-			o.handleStale(unit{resource, slot})
 		}
 		if len(taken) >= want {
 			for _, u := range taken {
@@ -265,32 +266,6 @@ func (a *Acquired) dropTentative(taken []unit) {
 			_ = f.Close()
 			delete(a.files, u)
 		}
-	}
-}
-
-// handleStale checks the holder record of a busy slot. A record whose
-// process is gone (or whose PID was reused) is cleared and noted; a record
-// older than the TTL for the same reason is evicted as expired. It reports
-// whether a record was cleared, in which case the slot should be retried
-// immediately.
-func (o *Options) handleStale(u unit) bool {
-	holder, err := o.Store.Holder(u.resource, u.slot)
-	if err != nil || holder == nil {
-		return false
-	}
-	switch {
-	case o.ttlExpired(holder):
-		o.recordTakeover(u, holder, store.EventTTLExpire, "TTL elapsed and holder unresponsive")
-		o.note("slot %d of %q was held past its TTL by %s and is unresponsive; taking over",
-			u.slot, u.resource, DescribeHolder(holder))
-		return true
-	case holderStale(holder):
-		o.recordTakeover(u, holder, store.EventTakeover, "holder process is gone")
-		o.note("slot %d of %q had a stale holder (%s); taking over",
-			u.slot, u.resource, DescribeHolder(holder))
-		return true
-	default:
-		return false
 	}
 }
 
@@ -358,8 +333,16 @@ func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bo
 	if !deadline.IsZero() && !o.now().Before(deadline) {
 		return false
 	}
-	time.Sleep(o.pollInterval())
-	return true
+	if o.Context == nil {
+		time.Sleep(o.pollInterval())
+		return true
+	}
+	select {
+	case <-o.Context.Done():
+		return false
+	case <-time.After(o.pollInterval()):
+		return true
+	}
 }
 
 // busyAt builds the busy error for a resource, naming the current holder
@@ -431,6 +414,15 @@ func (a *Acquired) Release() {
 		_ = a.opts.Store.DropWaiter(id)
 		delete(a.waiter, resource)
 	}
+}
+
+// Files returns the locked descriptors for inheritance by a resource user.
+func (a *Acquired) Files() []*os.File {
+	var files []*os.File
+	for _, u := range a.units {
+		files = append(files, a.files[u])
+	}
+	return files
 }
 
 // SlotOf returns the slot this acquisition took of a resource, or 0 when

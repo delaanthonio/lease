@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -64,14 +66,16 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 
 // RunOptions are the flags shared by run and acquire.
 type RunOptions struct {
-	Slots  int
-	Wait   time.Duration
-	NoWait bool
-	TTL    time.Duration
-	Config string
+	Slots         int
+	Wait          time.Duration
+	NoWait        bool
+	TTL           time.Duration
+	Config        string
+	RecordCommand bool
 }
 
 func (r *RunOptions) register(fs *flag.FlagSet) {
+	fs.BoolVar(&r.RecordCommand, "record-command", false, "record the full command line")
 	fs.IntVar(&r.Slots, "slots", 1, "number of slots to take of each resource")
 	fs.DurationVar(&r.Wait, "wait", 0, "how long to wait for busy slots, e.g. 5m; default waits forever")
 	fs.BoolVar(&r.NoWait, "no-wait", false, "fail immediately when a slot is busy")
@@ -140,13 +144,19 @@ func RunCommand(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
-	opts.Command = strings.Join(cmdArgs, " ")
+	opts.Command = filepath.Base(cmdArgs[0])
+	if opts0.RecordCommand || opts.Config.RecordCommand {
+		opts.Command = strings.Join(cmdArgs, " ")
+	}
 
 	// Watch for termination signals from before the lock is held until the
 	// child exits, so the locks are always released.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer cancel()
+	opts.Context = ctx
 
 	acq, err := opts.Acquire(names)
 	if err != nil {
@@ -175,6 +185,7 @@ func RunCommand(argv []string, stdout, stderr io.Writer) int {
 	}
 
 	child := exec.Command(cmdArgs[0], cmdArgs[1:]...) //nolint:gosec // the command is the caller's choice, run verbatim
+	child.ExtraFiles = acq.Files()
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
