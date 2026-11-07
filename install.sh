@@ -40,6 +40,18 @@ install_dir="${INSTALL_DIR:-$HOME/.local/bin}"
 if [ "$(id -u)" = "0" ] && [ -z "${INSTALL_DIR:-}" ]; then
   install_dir="/usr/local/bin"
 fi
+# A privileged install into a directory other users can write lets one of
+# them replace the temporary binary before it is installed.
+if [ "$(id -u)" = "0" ]; then
+  mode=$(stat -c '%a' "$install_dir" 2>/dev/null || stat -f '%Lp' "$install_dir")
+  group=${mode%?}
+  case "$mode" in
+    *[2367]) echo "install.sh: refusing privileged install into world-writable $install_dir" >&2; exit 1 ;;
+  esac
+  case "$group" in
+    *[2367]) echo "install.sh: refusing privileged install into group-writable $install_dir" >&2; exit 1 ;;
+  esac
+fi
 mkdir -p "$install_dir"
 
 asset="${name}-${os}-${arch}"
