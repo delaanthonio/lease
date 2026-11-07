@@ -40,19 +40,34 @@ install_dir="${INSTALL_DIR:-$HOME/.local/bin}"
 if [ "$(id -u)" = "0" ] && [ -z "${INSTALL_DIR:-}" ]; then
   install_dir="/usr/local/bin"
 fi
-# A privileged install into a directory other users can write lets one of
-# them replace the temporary binary before it is installed.
-if [ "$(id -u)" = "0" ]; then
-  mode=$(stat -c '%a' "$install_dir" 2>/dev/null || stat -f '%Lp' "$install_dir")
-  group=${mode%?}
-  case "$mode" in
-    *[2367]) echo "install.sh: refusing privileged install into world-writable $install_dir" >&2; exit 1 ;;
-  esac
-  case "$group" in
-    *[2367]) echo "install.sh: refusing privileged install into group-writable $install_dir" >&2; exit 1 ;;
-  esac
-fi
 mkdir -p "$install_dir"
+if [ "$(id -u)" = "0" ]; then
+  case "$install_dir" in
+    /*) path=$install_dir ;;
+    *) path=$PWD/$install_dir ;;
+  esac
+  while :; do
+    while [ "$path" != / ] && [ "${path%/}" != "$path" ]; do path=${path%/}; done
+    if [ -L "$path" ]; then
+      echo "install.sh: refusing privileged install through symlink $path" >&2; exit 1
+    fi
+    owner=$(stat -c '%u' "$path" 2>/dev/null || stat -f '%u' "$path")
+    if [ "$owner" != 0 ]; then
+      echo "install.sh: refusing privileged install through non-root-owned $path" >&2; exit 1
+    fi
+    mode=$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path")
+    group=${mode%?}
+    case "$mode" in
+      *[2367]) echo "install.sh: refusing privileged install through world-writable $path" >&2; exit 1 ;;
+    esac
+    case "$group" in
+      *[2367]) echo "install.sh: refusing privileged install through group-writable $path" >&2; exit 1 ;;
+    esac
+    [ "$path" = / ] && break
+    path=${path%/*}
+    [ -n "$path" ] || path=/
+  done
+fi
 
 asset="${name}-${os}-${arch}"
 url="https://github.com/$repo/releases/download/$version/$asset"
