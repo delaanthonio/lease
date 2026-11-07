@@ -1,0 +1,4 @@
+/lease
+/dist/
+*.test
+.DS_Store
