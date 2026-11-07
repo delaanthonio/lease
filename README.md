@@ -119,10 +119,10 @@ lease release "$token"
 ```
 
 `lease acquire` prints one token for the complete set of resources and slots. A small keeper process
-holds the kernel lock until `lease release TOKEN` signals it or it is
-killed; a killed keeper leaves the slot to the stale-holder takeover
-machinery. If a script acquires and dies before releasing, the lock does
-not leak.
+holds the kernel lock until it is released, its owner exits, its TTL expires,
+or it is killed. A killed keeper leaves its holder record for stale-holder
+takeover. By default, if the calling script dies before releasing, its keeper
+releases the lock.
 
 ### Force release
 
@@ -159,8 +159,8 @@ what is resolved.
 
 A holder is named from the environment: `FM_TASK_ID` for agent tasks,
 `GITHUB_RUN_ID` and `GITHUB_JOB` for CI, otherwise the user, pid, and
-command. The status view and busy messages always say who holds a resource
-and since when.
+command. The status view and busy messages report the holder and acquisition
+time when a holder record is available.
 
 ## Exit codes
 
@@ -172,7 +172,7 @@ and since when.
 | 75 | the resource is busy or the wait elapsed (EX_TEMPFAIL) |
 | n | the command's own exit code, `128+n` when it died from signal n |
 
-A busy failure names the current holder and how long it has held the lock:
+A busy failure can name the current holder and when it acquired the lock:
 
 ```text
 lease: resource "db" slot 1 is held by user:alice pid 4242 seed-db since 2026-11-07T09:12:00Z
@@ -192,9 +192,8 @@ By default state is outside any worktree. The directory is chosen from
 
 Stale holders (pid gone, or the pid was reused by a different process) are
 detected and taken over automatically, with a note on stderr and a best-effort
-entry in the history. `--ttl` releases a hung holder only when it is also
-unresponsive: a record older than the TTL whose process is gone is evicted,
-while a live process keeps its lock no matter how long it has held it.
+entry in the history. For `lease run`, `--ttl` identifies an old stale
+holder record during takeover; it does not release a live holder's lock.
 
 All metadata goes through an internal `Store` interface with the
 file-backed implementation as the only one today; a database-backed
@@ -214,11 +213,11 @@ Apache-2.0. Copyright 2026 Dela Anthonio. See [LICENSE](LICENSE) and
 
 ### Coordination and privacy
 
-Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History is private (0600) by default and group-readable and writable (0660) in shared mode. The shared directory must be owned by the common group and have the setgid bit set so new files inherit that group. A shared directory created under a parent without the setgid bit can briefly carry the creator's group before group inheritance is fully established; a later change plans to publish shared directories atomically.
+Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History is private (0600) by default and group-readable and writable (0660) in shared mode. The shared directory must be owned by the common group and have the setgid bit set so new files inherit that group. A shared directory created under a parent without the setgid bit can briefly carry the creator's group before group inheritance is fully established.
 
 Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments in private mode; shared mode refuses full command recording. History retains at most 1,000 events and 30 days, whichever is smaller. Appends and history reads prune expired entries; if a read encounters a busy history lock, it filters the results and leaves pruning on disk for a later operation. No cleanup runs while lease is idle. History is best-effort diagnostics, not an audit trail; events can be dropped under contention. Force-release records its reason before clearing a stale holder. Command recording is off by default; files outside lease are not touched by retention cleanup.
 
-Manual acquisitions use the calling parent as owner; `--owner-pid` selects another owner. A keeper releases when its owner exits or its TTL expires. The default TTL is 30 minutes, configurable with `manual_ttl = "30m"` or `--ttl`. A single token represents the complete acquisition; `lease release NAME` also releases a manual acquisition with the same holder identity.
+Manual acquisitions use the calling parent as owner; `--owner-pid` selects another owner. The default TTL is 30 minutes, configurable with `manual_ttl = "30m"` or `--ttl`. `lease release NAME` also releases a manual acquisition with the same holder identity.
 
 ### Limits
 

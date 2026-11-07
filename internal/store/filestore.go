@@ -21,7 +21,7 @@ import (
 //
 //	holders/<resource>/<slot>.json   one holder record per slot
 //	waiters/<resource>/<id>.json     one waiter ticket per waiting caller
-//	events.ndjson                    append-only history, one JSON per line
+//	events.ndjson                    retained history, one JSON per line
 type FileStore struct {
 	root string
 }
