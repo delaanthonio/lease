@@ -40,16 +40,21 @@ install_dir="${INSTALL_DIR:-$HOME/.local/bin}"
 if [ "$(id -u)" = "0" ] && [ -z "${INSTALL_DIR:-}" ]; then
   install_dir="/usr/local/bin"
 fi
-mkdir -p "$install_dir"
 if [ "$(id -u)" = "0" ]; then
   case "$install_dir" in
-    /*) path=$install_dir ;;
-    *) path=$PWD/$install_dir ;;
+    /*) remaining=${install_dir#/} ;;
+    *) remaining=${PWD#/}/$install_dir ;;
   esac
+  path=/
   while :; do
-    while [ "$path" != / ] && [ "${path%/}" != "$path" ]; do path=${path%/}; done
     if [ -L "$path" ]; then
       echo "install.sh: refusing privileged install through symlink $path" >&2; exit 1
+    fi
+    if [ ! -e "$path" ]; then
+      mkdir "$path"
+    fi
+    if [ ! -d "$path" ]; then
+      echo "install.sh: refusing privileged install through non-directory $path" >&2; exit 1
     fi
     owner=$(stat -c '%u' "$path" 2>/dev/null || stat -f '%u' "$path")
     if [ "$owner" != 0 ]; then
@@ -63,10 +68,17 @@ if [ "$(id -u)" = "0" ]; then
     case "$group" in
       *[2367]) echo "install.sh: refusing privileged install through group-writable $path" >&2; exit 1 ;;
     esac
-    [ "$path" = / ] && break
-    path=${path%/*}
-    [ -n "$path" ] || path=/
+    [ -n "$remaining" ] || break
+    component=${remaining%%/*}
+    case "$remaining" in
+      */*) remaining=${remaining#*/} ;;
+      *) remaining= ;;
+    esac
+    [ -n "$component" ] || continue
+    path=${path%/}/$component
   done
+else
+  mkdir -p "$install_dir"
 fi
 
 asset="${name}-${os}-${arch}"
