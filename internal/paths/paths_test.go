@@ -1,10 +1,66 @@
 package paths
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+func TestSharedDirectoryGroupInheritance(t *testing.T) {
+	if dir := os.Getenv("LEASE_TEST_SHARED_DIR"); dir != "" {
+		f, err := OpenFile(filepath.Join(dir, "participant"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	previous := Shared
+	Shared = true
+	t.Cleanup(func() { Shared = previous })
+	root := t.TempDir()
+	if err := os.Chmod(root, 0770|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "locks", "resource")
+	if err := MkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Dir(dir), dir} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSetgid == 0 {
+			t.Fatalf("%s does not inherit its group", path)
+		}
+	}
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range groups {
+		if group == os.Getgid() {
+			continue
+		}
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSharedDirectoryGroupInheritance$")
+		cmd.Env = append(os.Environ(), "LEASE_TEST_SHARED_DIR="+dir)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(os.Getuid()), Gid: uint32(group), NoSetGroups: true}}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if err == syscall.EPERM || strings.Contains(err.Error(), "operation not permitted") {
+				t.Skip("cannot start a participant with a different primary group")
+			}
+			t.Fatalf("second participant: %v\n%s", err, out)
+		}
+		return
+	}
+	t.Skip("no supplementary group available for a second participant")
+}
 
 func TestStateDirOverrideWins(t *testing.T) {
 	look := func(k string) (string, bool) {

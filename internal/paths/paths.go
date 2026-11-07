@@ -91,15 +91,15 @@ func MkdirAll(path string) error {
 	if err := MkdirAll(filepath.Dir(path)); err != nil {
 		return err
 	}
-	if err := os.Mkdir(path, DirMode()); err != nil {
+	mode := DirMode()
+	if Shared {
+		mode |= os.ModeSetgid
+	}
+	if err := os.Mkdir(path, mode); err != nil {
 		if os.IsExist(err) {
 			return nil
 		}
 		return err
-	}
-	mode := DirMode()
-	if Shared {
-		mode |= os.ModeSetgid
 	}
 	return os.Chmod(path, mode)
 }
