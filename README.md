@@ -72,7 +72,7 @@ db        user:alice pid 4242 seed-db  5m     1/1    1
 
 ```toml
 [tasks.test-sim]
-run = "lease run ios-simulator -- xcrun simctl boot 'iPhone 16' && ./scripts/ui-tests"
+run = "lease run ios-simulator -- sh -c \"xcrun simctl boot 'iPhone 16' && ./scripts/ui-tests\""
 
 [tasks.dev-server]
 run = "lease run dev-port-3000 --wait 5m -- ./scripts/dev-server"
@@ -117,7 +117,7 @@ token=$(lease acquire dev-port-3000)   # one slot, held by a small keeper proces
 lease release "$token"
 ```
 
-`lease acquire` prints one token per acquired slot. A small keeper process
+`lease acquire` prints one token for the complete set of resources and slots. A small keeper process
 holds the kernel lock until `lease release TOKEN` signals it or it is
 killed; a killed keeper leaves the slot to the stale-holder takeover
 machinery. If a script acquires and dies before releasing, the lock does
@@ -222,3 +222,5 @@ Manual acquisitions use the calling parent as owner; `--owner-pid` selects anoth
 ### Limits
 
 A child inherits the lock descriptors. If it deliberately closes them and the wrapper is killed, the resource may be released while the child is still running.
+
+When changing from private to shared mode, choose a new state directory; lease refuses to republish existing private history to the group.

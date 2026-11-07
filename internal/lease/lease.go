@@ -205,7 +205,12 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 	if want > total {
 		return fmt.Errorf("resource %q has %d slot(s) but %d were requested", resource, total, want)
 	}
+	first := true
 	for {
+		if !first && !deadline.IsZero() && !o.now().Before(deadline) {
+			return o.busyAt(resource)
+		}
+		first = false
 		if o.Context != nil && o.Context.Err() != nil {
 			return o.Context.Err()
 		}
@@ -341,14 +346,23 @@ func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bo
 	if !deadline.IsZero() && !o.now().Before(deadline) {
 		return false
 	}
+	delay := o.pollInterval()
+	if !deadline.IsZero() {
+		if remaining := deadline.Sub(o.now()); remaining < delay {
+			delay = remaining
+		}
+	}
+	if delay <= 0 {
+		return false
+	}
 	if o.Context == nil {
-		time.Sleep(o.pollInterval())
+		time.Sleep(delay)
 		return true
 	}
 	select {
 	case <-o.Context.Done():
 		return false
-	case <-time.After(o.pollInterval()):
+	case <-time.After(delay):
 		return true
 	}
 }
@@ -464,11 +478,15 @@ type ResourceView struct {
 	Total    int
 	Used     int
 	Holders  []*store.Holder // per slot index 1..Total, nil when free
+	SlotUsed []bool
 	Waiting  int
 }
 
 // Inspect probes each resource. It never changes holder records.
 func Inspect(stateDir string, st store.Store, cfg *config.Config, resources []string) ([]ResourceView, error) {
+	if err := ValidateNames(resources); err != nil {
+		return nil, err
+	}
 	sorted := append([]string(nil), resources...)
 	sort.Strings(sorted)
 	out := make([]ResourceView, 0, len(sorted))
@@ -487,6 +505,7 @@ func Inspect(stateDir string, st store.Store, cfg *config.Config, resources []st
 			if err != nil {
 				return nil, err
 			}
+			view.SlotUsed = append(view.SlotUsed, used)
 			if used {
 				view.Used++
 				view.Holders = append(view.Holders, holder)

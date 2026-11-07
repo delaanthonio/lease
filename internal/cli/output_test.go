@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/delaanthonio/lease/internal/lease"
+	"github.com/delaanthonio/lease/internal/lock"
 	"github.com/delaanthonio/lease/internal/store"
 )
 
@@ -148,5 +149,73 @@ func TestHumanizeSince(t *testing.T) {
 	}
 	if got := humanizeSince(time.Time{}, now); got != "-" {
 		t.Errorf("zero time = %q, want -", got)
+	}
+}
+
+func TestStatusShowsLockedSlotWithMissingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	file, err := lock.OpenSlot(dir, "db", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	ok, err := lock.TryLock(file)
+	if err != nil || !ok {
+		t.Fatalf("lock: %v", err)
+	}
+	defer lock.Unlock(file)
+	views, err := lease.Inspect(dir, store.NewMemStore(), nil, []string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table, jsonOut strings.Builder
+	RenderTable(&table, views, time.Now())
+	if err := RenderJSON(&jsonOut, views); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(table.String(), "unknown") || !strings.Contains(table.String(), "1/1") {
+		t.Fatalf("table: %s", table.String())
+	}
+	var parsed []struct {
+		Used    int `json:"used"`
+		Holders []struct {
+			Slot   int    `json:"slot"`
+			Holder string `json:"holder"`
+		} `json:"holders"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut.String()), &parsed); err != nil || len(parsed) != 1 || parsed[0].Used != 1 || len(parsed[0].Holders) != 1 || parsed[0].Holders[0].Slot != 1 || parsed[0].Holders[0].Holder != "unknown" {
+		t.Fatalf("json: %s (%v)", jsonOut.String(), err)
+	}
+}
+
+func TestCleanupPreservesReplacementHolder(t *testing.T) {
+	dir := t.TempDir()
+	st := store.NewMemStore()
+	old := &store.Holder{Resource: "db", Slot: 1, PID: 1, Token: "old"}
+	replacement := &store.Holder{Resource: "db", Slot: 1, PID: 2, Token: "new"}
+	if err := st.SetHolder(replacement); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := clearObserved(st, dir, old)
+	if err != nil || cleared {
+		t.Fatalf("cleared replacement: %v %v", cleared, err)
+	}
+	got, err := st.Holder("db", 1)
+	if err != nil || got == nil || got.Token != "new" {
+		t.Fatalf("replacement lost: %+v %v", got, err)
+	}
+	f, err := lock.OpenSlot(dir, "db", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	ok, err := lock.TryLock(f)
+	if err != nil || !ok {
+		t.Fatal("failed to lock slot")
+	}
+	defer lock.Unlock(f)
+	cleared, err = clearObserved(st, dir, replacement)
+	if err != nil || cleared {
+		t.Fatalf("cleared locked holder: %v %v", cleared, err)
 	}
 }

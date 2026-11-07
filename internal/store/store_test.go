@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/delaanthonio/lease/internal/paths"
 )
 
 // storeCases run identical table-driven assertions against both Store
@@ -272,5 +274,27 @@ func TestFileHistoryRetentionAndUnsafeNames(t *testing.T) {
 	info, err := os.Stat(st.eventsPath())
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("history mode: %v %v", info, err)
+	}
+}
+
+func TestSharedModeRefusesPrivateHistory(t *testing.T) {
+	previous := paths.Shared
+	defer func() { paths.Shared = previous }()
+	paths.Shared = false
+	st := NewFileStore(t.TempDir())
+	if err := st.AppendEvent(Event{Kind: EventAcquire, Detail: "cmd private-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	paths.Shared = true
+	if err := st.AppendEvent(Event{Kind: EventAcquire, Detail: "safe"}); err == nil {
+		t.Fatal("shared mode published private history")
+	}
+	info, err := os.Stat(st.eventsPath())
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("private history permissions changed: %v %v", info, err)
+	}
+	events, err := st.Events()
+	if err != nil || len(events) != 1 || events[0].Detail != "cmd private-secret" {
+		t.Fatalf("private history changed: %+v %v", events, err)
 	}
 }

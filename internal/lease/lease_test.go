@@ -376,3 +376,32 @@ func TestAcquireOneFailsWhenAllSlotsBusy(t *testing.T) {
 	_, err = waiter.AcquireOne("sim")
 	busyResource(t, err)
 }
+
+func TestBoundedWaitCannotAcquireAfterDeadline(t *testing.T) {
+	f := newFixture(t)
+	holder, err := f.options().Acquire([]string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { time.Sleep(40 * time.Millisecond); holder.Release(); close(done) }()
+	waiter := f.options()
+	waiter.Wait = 10 * time.Millisecond
+	waiter.PollInterval = 150 * time.Millisecond
+	got, err := waiter.Acquire([]string{"db"})
+	if err == nil {
+		got.Release()
+		t.Fatal("acquired after the deadline")
+	}
+	busyResource(t, err)
+	<-done
+}
+
+func TestInspectRejectsUnsafeResourcePaths(t *testing.T) {
+	f := newFixture(t)
+	for _, name := range []string{".", ".."} {
+		if _, err := Inspect(f.stateDir, f.store, nil, []string{name}); err == nil {
+			t.Fatalf("accepted %q", name)
+		}
+	}
+}

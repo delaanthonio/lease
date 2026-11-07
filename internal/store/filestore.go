@@ -235,6 +235,15 @@ func (s *FileStore) AppendEvent(e Event) error {
 		return err
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	if paths.Shared {
+		info, err := os.Stat(s.eventsPath())
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && info.Mode().Perm() != 0660 {
+			return fmt.Errorf("private history cannot be used in shared mode; choose a new shared state directory")
+		}
+	}
 	events, err := s.Events()
 	if err != nil {
 		return err

@@ -45,6 +45,9 @@ func RenderJSON(w io.Writer, views []lease.ResourceView) error {
 		for slot := 1; slot <= v.Total; slot++ {
 			h := v.Holders[slot-1]
 			if h == nil {
+				if len(v.SlotUsed) >= slot && v.SlotUsed[slot-1] {
+					jv.Holders = append(jv.Holders, jsonHolderVM{Slot: slot, Holder: "unknown"})
+				}
 				continue
 			}
 			jv.Holders = append(jv.Holders, jsonHolderVM{
@@ -71,8 +74,11 @@ func RenderTable(w io.Writer, views []lease.ResourceView, now time.Time) {
 			rows = append(rows, []string{v.Resource, "-", "-", fmt.Sprintf("0/%d", v.Total), fmt.Sprint(v.Waiting)})
 			continue
 		}
-		for _, h := range v.Holders {
+		for i, h := range v.Holders {
 			if h == nil {
+				if len(v.SlotUsed) > i && v.SlotUsed[i] {
+					rows = append(rows, []string{v.Resource, "unknown", "-", fmt.Sprintf("%d/%d", v.Used, v.Total), fmt.Sprint(v.Waiting)})
+				}
 				continue
 			}
 			holder := lease.DescribeHolder(h)
