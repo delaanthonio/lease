@@ -100,6 +100,30 @@ func asExitError(err error, target **exec.ExitError) bool {
 	return ok
 }
 
+func TestCommandHelp(t *testing.T) {
+	_, env := leaseEnv(t)
+	for _, name := range []string{"run", "status", "acquire", "release", "force-release", "config", "_keeper"} {
+		for _, help := range []string{"-h", "--help"} {
+			t.Run(name+help, func(t *testing.T) {
+				out, stderr, code := runLease(t, env, 5*time.Second, name, help)
+				if code != 0 || !strings.Contains(out, "Usage of lease "+name+":") || stderr != "" {
+					t.Fatalf("help: code=%d stdout=%q stderr=%q", code, out, stderr)
+				}
+			})
+		}
+	}
+	for _, args := range [][]string{{"status", "--unknown"}, {"run", "db"}, {"run", "--unknown"}} {
+		_, _, code := runLease(t, env, 5*time.Second, args...)
+		if code == 0 {
+			t.Errorf("%v unexpectedly succeeded", args)
+		}
+	}
+	out, _, code := runLease(t, env, 5*time.Second, "run", "db", "--", "/bin/echo", "--help")
+	if code != 0 || strings.TrimSpace(out) != "--help" {
+		t.Fatalf("child help argument: code=%d stdout=%q", code, out)
+	}
+}
+
 func TestRunContentionTwoCallers(t *testing.T) {
 	_, env := leaseEnv(t)
 

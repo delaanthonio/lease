@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -158,7 +159,7 @@ func startKeeper(kf keeperFlags) (token string, release func(), err error) {
 // killed, and the stale-holder machinery takes over from there.
 func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 	kf := keeperFlags{}
-	fs := newFlagSet("_keeper", stderr)
+	fs := newFlagSet("_keeper", stdout, stderr)
 	fs.StringVar(&kf.StateDir, "state-dir", "", "")
 	namesJSON := fs.String("names-json", "", "")
 	fs.IntVar(&kf.Slots, "slots", 1, "")
@@ -173,6 +174,9 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 	fs.DurationVar(&kf.TTL, "ttl", 0, "")
 	holderJSON := fs.String("holder-json", "", "")
 	if err := fs.Parse(argv); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return exitUsage
 	}
 	if err := json.Unmarshal([]byte(*namesJSON), &kf.Names); err != nil || len(kf.Names) == 0 || kf.StateDir == "" || kf.Slots < 1 || kf.TTL <= 0 || kf.OwnerStart == "" || proc.HolderIsStale(kf.OwnerPID, kf.OwnerStart) != nil {

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -20,11 +21,14 @@ import (
 
 // StatusCommand implements lease status [NAME...] [--json].
 func StatusCommand(argv []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("status", stderr)
+	fs := newFlagSet("status", stdout, stderr)
 	asJSON := fs.Bool("json", false, "emit stable, compact JSON for agents")
 	configPath := fs.String("config", "", "path to the config file (default: $LEASE_CONFIG or the user config dir)")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		// Output is best effort; preserve the command result.
 		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return exitUsage
@@ -95,9 +99,12 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 // ConfigCommand implements lease config: show the resolved state
 // directory, config file, and resource slot counts.
 func ConfigCommand(argv []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("config", stderr)
+	fs := newFlagSet("config", stdout, stderr)
 	configPath := fs.String("config", "", "path to the config file (default: $LEASE_CONFIG or the user config dir)")
 	if err := fs.Parse(argv); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return exitUsage
 	}
 
@@ -156,11 +163,14 @@ func dedup(sorted []string) []string {
 // history. It never kills a live process; a slot held by a
 // running process stays held until that process exits.
 func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("force-release", stderr)
+	fs := newFlagSet("force-release", stdout, stderr)
 	reason := fs.String("reason", "", "why the lock is being force-released (required, logged)")
 	configPath := fs.String("config", "", "config file")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		// Output is best effort; preserve the command result.
 		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return exitUsage
@@ -247,11 +257,14 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 // leaves the slot to the stale-holder takeover machinery.
 func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 	opts := RunOptions{}
-	fs := newFlagSet("acquire", stderr)
+	fs := newFlagSet("acquire", stdout, stderr)
 	opts.register(fs)
 	ownerPID := fs.Int("owner-pid", os.Getppid(), "process that owns the lease")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		// Output is best effort; preserve the command result.
 		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
 		return exitUsage
@@ -334,10 +347,13 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 
 // ReleaseCommand implements lease release TOKEN.
 func ReleaseCommand(argv []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("release", stderr)
+	fs := newFlagSet("release", stdout, stderr)
 	configPath := fs.String("config", "", "config file")
 	args, err := parseArgs(fs, argv)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return exitUsage
 	}
 	if len(args) != 1 {

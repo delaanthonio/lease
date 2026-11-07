@@ -24,10 +24,15 @@ const exitUsage = 2
 
 // newFlagSet builds a flag set that reports usage problems to stderr and
 // returns instead of exiting.
-func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
+func newFlagSet(name string, stdout, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.Usage = func() {}
+	fs.Usage = func() {
+		_, _ = fmt.Fprintf(stdout, "Usage of lease %s:\n", name)
+		fs.SetOutput(stdout)
+		fs.PrintDefaults()
+		fs.SetOutput(stderr)
+	}
 	return fs
 }
 
@@ -128,20 +133,24 @@ func (r *RunOptions) prepare(stderr io.Writer) (*lease.Options, error) {
 // the command's exit code.
 func RunCommand(argv []string, stdout, stderr io.Writer) int {
 	opts0 := RunOptions{}
-	fs := newFlagSet("run", stderr)
+	fs := newFlagSet("run", stdout, stderr)
 	opts0.register(fs)
-	pre, cmdArgs, err := splitCommand(argv)
+	pre, cmdArgs, splitErr := splitCommand(argv)
+	if splitErr != nil {
+		pre = argv
+	}
+
+	names, err := parseArgs(fs, pre)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		// Output is best effort; preserve the command result.
 		_, _ = fmt.Fprintf(stderr, "lease run: %s\n", err)
 		return exitUsage
 	}
-
-	var names []string
-	names, err = parseArgs(fs, pre)
-	if err != nil {
-		// Output is best effort; preserve the command result.
-		_, _ = fmt.Fprintf(stderr, "lease run: %s\n", err)
+	if splitErr != nil {
+		_, _ = fmt.Fprintf(stderr, "lease run: %s\n", splitErr)
 		return exitUsage
 	}
 	if len(names) == 0 || len(cmdArgs) == 0 {
