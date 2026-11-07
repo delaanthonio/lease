@@ -30,12 +30,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	// Cleanup is best effort; preserve the existing result.
-	defer func() { _ = os.RemoveAll(dir) }()
-	// Build from the module root, two levels above this package.
 	root, err := filepath.Abs(filepath.Join(".", "..", ".."))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.RemoveAll(dir)
 		os.Exit(1)
 	}
 	bin := filepath.Join(dir, "lease")
@@ -44,10 +42,13 @@ func TestMain(m *testing.M) {
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "build lease: %v\n", err)
+		os.RemoveAll(dir)
 		os.Exit(1)
 	}
 	leaseBin = bin
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // leaseEnv isolates one test's state directory.
@@ -380,6 +381,37 @@ func TestReleaseRefusesOutOfRangeHolderPid(t *testing.T) {
 				t.Fatalf("corrupt holder record survived release: %+v", cur)
 			}
 		})
+	}
+}
+
+// TestForceReleaseReportsSlotStillLockedByDescendant pins the skipped-slot
+// report: when the recorded holder is gone but a descendant still holds
+// the slot's lock, force-release must say the slot is still locked and
+// point at a descendant, and must clear the record once the descendant
+// exits.
+func TestForceReleaseReportsSlotStillLockedByDescendant(t *testing.T) {
+	_, env := leaseEnv(t)
+	_, stderr, code := runLease(t, env, 5*time.Second, "run", "db", "--", "/bin/sh", "-c", "sleep 4 </dev/null >/dev/null 2>&1 &")
+	if code != 0 {
+		t.Fatalf("wrapper failed: %d %s", code, stderr)
+	}
+	stdout, _, code := runLease(t, env, 5*time.Second, "force-release", "db", "--reason", "descendant test")
+	if code != 0 {
+		t.Fatalf("force-release exit = %d, stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "still locked") || !strings.Contains(stdout, "descendant") {
+		t.Fatalf("force-release did not report the locked slot: %q", stdout)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		stdout, _, code = runLease(t, env, 5*time.Second, "force-release", "db", "--reason", "descendant test")
+		if code == 0 && strings.Contains(stdout, "cleared") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("force-release never cleared the stale record: %q", stdout)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
