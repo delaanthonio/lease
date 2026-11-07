@@ -1,14 +1,16 @@
 # lease
 
-Named locks for scarce machine resources: an iOS Simulator device, dev-server
-ports, a local Postgres, Xcode builds, a self-hosted runner. When workers,
-skills, and CI jobs share one machine, `lease` keeps them from stepping on
-each other.
+Some resources on a machine can only serve one caller at a time: an iOS
+Simulator device, a dev-server port, a local Postgres, an Xcode build, a
+self-hosted runner. When workers, skills, and CI jobs share the machine,
+they bump into each other. `lease` gives each resource a named lock so
+callers line up instead of colliding.
 
-Locks are kernel file locks (`flock(2)`) in a machine-wide directory. There
-is no daemon: the kernel releases a lock when all processes holding its
-file descriptor close it or exit, even after a crash or a `kill -9`.
-Holder records detect stale holders and take over automatically.
+A lock is a kernel file lock (`flock(2)`) in a state directory. There is no
+daemon to run. The kernel releases a lock when every process holding its
+file descriptor has closed it or exited, so a crash or a `kill -9` cannot
+leak a lock. Holder records spot stale holders and take them over
+automatically.
 
 ```sh
 lease run ios-simulator -- xcrun simctl boot "iPhone 16"
@@ -25,8 +27,8 @@ curl -fsSL https://raw.githubusercontent.com/delaanthonio/lease/main/install.sh 
 
 This installs the `lease` binary for your platform into `~/.local/bin` (or
 `/usr/local/bin` with `sudo`, or any directory with `INSTALL_DIR=...`).
-Binaries are built for macOS and Linux (amd64, arm64). Or build from
-source with Go 1.25 or newer:
+Binaries are built for macOS and Linux (amd64, arm64). You can also build
+from source with Go 1.25 or newer:
 
 ```sh
 go install github.com/delaanthonio/lease/cmd/lease@latest
@@ -41,7 +43,8 @@ a symlink. Missing directories are created after their ancestors are checked.
 Wrap the command that uses the scarce resource:
 
 ```sh
-# One exclusive lock; a second caller waits (default) or fails with --no-wait.
+# One exclusive lock. A second caller waits by default,
+# or fails right away with --no-wait.
 lease run ios-simulator -- xcrun simctl boot "iPhone 16"
 
 # Wait at most five minutes, then give up.
@@ -54,12 +57,12 @@ printf '[resources.build]\nslots = 2\n' > "$LEASE_CONFIG"
 lease run build -- xcodebuild -scheme App build
 ```
 
-`lease run` acquires every named lock in a fixed sorted order, runs the
+`lease run` takes every named lock in a fixed sorted order, runs the
 command with inherited stdio, closes its lock descriptors when the command
 exits (including on signals), and returns the command's exit code. A child
-that retains an inherited descriptor keeps the corresponding lock held.
+that keeps an inherited descriptor keeps the matching lock held.
 
-Inspect what is held:
+To see what is held right now:
 
 ```sh
 lease status                 # every resource on this machine
@@ -73,7 +76,9 @@ RESOURCE  HOLDER                       SINCE  SLOTS  WAITING
 db        user:alice pid 4242 seed-db  5m     1/1    1
 ```
 
-## Adopting it in a mise task
+## Use it from a task runner
+
+In a mise task, wrap the same way:
 
 ```toml
 [tasks.test-sim]
@@ -83,12 +88,12 @@ run = "lease run ios-simulator -- sh -c \"xcrun simctl boot 'iPhone 16' && ./scr
 run = "lease run dev-port-3000 --wait 5m -- ./scripts/dev-server"
 ```
 
-### Cooperative enforcement
+### Getting everyone to use it
 
-A lock only works when every user of the resource goes through `lease`. The
-kernel cannot stop a script from calling `xcrun simctl boot` directly. Make
-the wrapper the norm with a lint-friendly check that fails when a
-scarce-resource command appears outside `lease run`:
+A lock only helps when every user of the resource goes through `lease`. The
+kernel cannot stop a script from calling `xcrun simctl boot` directly. A
+small CI check keeps the convention visible by failing when a
+scarce-resource command shows up outside `lease run`:
 
 ```sh
 # scripts/check-lease-usage.sh - fail CI on direct calls that bypass lease
@@ -122,25 +127,25 @@ token=$(lease acquire dev-port-3000)   # one slot, held by a small keeper proces
 lease release "$token"
 ```
 
-`lease acquire` prints one token for the complete set of resources and slots. A small keeper process
-holds the kernel lock until it is released, its owner exits, its TTL expires,
-or it is killed. A killed keeper leaves its holder record for stale-holder
-takeover. By default, if the calling script dies before releasing, its keeper
-releases the lock.
+`lease acquire` prints one token for the complete set of resources and
+slots. A small keeper process holds the kernel lock until the lock is
+released, its owner exits, its TTL expires, or it is killed. A killed
+keeper leaves its holder record behind for stale-holder takeover. By
+default, if the calling script dies before releasing, its keeper releases
+the lock.
 
 ### Force release
 
-`lease force-release NAME --reason TEXT` is the captain's tool for stuck
-locks. It clears holder records whose process is gone and writes the
-reason and the previous holder to history. It never kills
-a live process: a slot held by a running process stays held until that
-process exits. Restrict it to whoever runs the machine (the "captain
-word"); everyday automation should never need it.
-This restriction is a convention, not an authorization check by `lease`.
+`lease force-release NAME --reason TEXT` clears locks that are stuck. It
+removes holder records whose process is gone and writes the reason and the
+previous holder to history. It never kills a live process: a slot held by a
+running process stays held until that process exits. Restrict this command
+to whoever runs the machine; everyday automation should not need it. That
+restriction is a convention, not an authorization check by `lease`.
 
 ## Slots and configuration
 
-An optional TOML file declares how many callers a resource admits:
+An optional TOML file says how many callers a resource admits:
 
 ```toml
 [resources.ios-simulator]
@@ -156,9 +161,9 @@ slots = 3
 The file lives at `$LEASE_CONFIG`, or `lease/config.toml` under the user
 config directory (`$XDG_CONFIG_HOME/lease/config.toml`, or
 `~/.config/lease/config.toml` on Linux,
-`~/Library/Application Support/lease/config.toml` on macOS). Resources
-absent from the file default to one exclusive slot. `lease config` shows
-what is resolved.
+`~/Library/Application Support/lease/config.toml` on macOS). A resource
+that is not in the file gets one exclusive slot. `lease config` shows what
+was resolved.
 
 ## Holder identity
 
@@ -185,7 +190,7 @@ lease: resource "db" slot 1 is held by user:alice pid 4242 seed-db since 2026-11
 
 ## Where state lives
 
-By default state is outside any worktree. The directory is chosen from
+By default, state lives outside any worktree. The directory is chosen from
 `$LEASE_DIR`, then `$LEASE_STATE_DIR`, then `dir` in the config, or `lease` under the user state dir
 (`$XDG_STATE_HOME/lease` or `~/.local/state/lease` on Linux,
 `~/Library/Application Support/lease` on macOS). Inside:
@@ -196,9 +201,10 @@ By default state is outside any worktree. The directory is chosen from
 - `events.ndjson` - retained history, including successful force-releases
 
 Stale holders (pid gone, or the pid was reused by a different process) are
-detected and taken over automatically, with a note on stderr and a best-effort
-entry in the history. For `lease run`, `--ttl` identifies an old stale
-holder record during takeover; it does not release a live holder's lock.
+detected and taken over automatically, with a note on stderr and a
+best-effort entry in the history. For `lease run`, `--ttl` identifies an
+old stale holder record during takeover; it does not release a live
+holder's lock.
 
 All metadata goes through an internal `Store` interface with the
 file-backed implementation as the only one today; a database-backed
@@ -210,13 +216,7 @@ changing the commands.
 lease is deliberately small: no scheduling, no priorities, no load-average
 awareness, no killing of processes. It coordinates; it does not decide.
 
-## License
-
-Apache-2.0. Copyright 2026 Dela Anthonio. See [LICENSE](LICENSE) and
-[NOTICE](NOTICE).
-
-
-### Coordination and privacy
+## Coordination and privacy
 
 Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History is private (0600) by default and group-readable and writable (0660) in shared mode. The shared directory must be owned by the common group and have the setgid bit set so new files inherit that group. On Linux, a new shared directory under a parent without setgid can be used before its own setgid bit is applied, so children created during that window may inherit the wrong group. Every participant coordinating through the same state directory must configure identical slot counts for each resource, and slot counts should not change while leases are active: callers configuring different counts can both use a resource that should be exclusive.
 
@@ -224,10 +224,15 @@ Commands record only the executable basename and holder identity by default. Use
 
 Manual acquisitions use the calling parent as owner; `--owner-pid` selects another owner. The default TTL is 30 minutes, configurable with `manual_ttl = "30m"` or `--ttl`. `lease release NAME` also releases a manual acquisition with the same holder identity.
 
-### Limits
+## Limits
 
 A child inherits the lock descriptors. If it deliberately closes them and the wrapper is killed, the resource may be released while the child is still running.
 
 When changing from private to shared mode, choose a new state directory; lease refuses to republish existing private history to the group.
 
 Resource names are case-sensitive. Stop older lease processes before upgrading to this version; its resource files use a new encoding and do not coordinate with older versions.
+
+## License
+
+Apache-2.0. Copyright 2026 Dela Anthonio. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
