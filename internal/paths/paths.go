@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 )
 
 // StateDirEnv is the environment variable that overrides the default
@@ -70,6 +72,7 @@ func isDarwin() bool {
 }
 
 var Shared bool
+var creationMu sync.Mutex
 
 func DirMode() os.FileMode {
 	if Shared {
@@ -95,7 +98,17 @@ func MkdirAll(path string) error {
 	if Shared {
 		mode |= os.ModeSetgid
 	}
-	if err := os.Mkdir(path, mode); err != nil {
+	var err error
+	if Shared {
+		creationMu.Lock()
+		mask := syscall.Umask(0)
+		err = os.Mkdir(path, mode)
+		syscall.Umask(mask)
+		creationMu.Unlock()
+	} else {
+		err = os.Mkdir(path, mode)
+	}
+	if err != nil {
 		if os.IsExist(err) {
 			return nil
 		}
@@ -105,12 +118,24 @@ func MkdirAll(path string) error {
 }
 
 func OpenFile(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, FileMode())
+	var f *os.File
+	var err error
+	if Shared {
+		creationMu.Lock()
+		mask := syscall.Umask(0)
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, FileMode())
+		syscall.Umask(mask)
+		creationMu.Unlock()
+	} else {
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, FileMode())
+	}
 	if err == nil {
-		if err := f.Chmod(FileMode()); err != nil {
-			// Cleanup is best effort; preserve the existing result.
-			_ = f.Close()
-			return nil, err
+		if !Shared {
+			if err := f.Chmod(FileMode()); err != nil {
+				// Cleanup is best effort; preserve the existing result.
+				_ = f.Close()
+				return nil, err
+			}
 		}
 		return f, nil
 	}

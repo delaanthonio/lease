@@ -9,6 +9,39 @@ import (
 	"testing"
 )
 
+func TestSharedCreationWithRestrictiveUmask(t *testing.T) {
+	root := t.TempDir()
+	previous := Shared
+	Shared = true
+	defer func() { Shared = previous }()
+	mask := syscall.Umask(0077)
+	defer syscall.Umask(mask)
+	dir := filepath.Join(root, "locks", "resource")
+	if err := MkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "slot.lock")
+	f, err := OpenFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{filepath.Dir(dir): 0770, dir: 0770, file: 0660} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("%s mode = %04o, want %04o", path, got, want)
+		}
+	}
+	if got := syscall.Umask(0077); got != 0077 {
+		t.Fatalf("umask = %04o, want 0077", got)
+	}
+}
+
 func TestSharedDirectoryGroupInheritance(t *testing.T) {
 	if dir := os.Getenv("LEASE_TEST_SHARED_DIR"); dir != "" {
 		f, err := OpenFile(filepath.Join(dir, "participant"))
