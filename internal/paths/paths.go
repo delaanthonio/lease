@@ -4,9 +4,11 @@
 package paths
 
 import (
+	"encoding/base32"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // StateDirEnv is the environment variable that overrides the default
@@ -115,4 +117,16 @@ func OpenFile(path string) (*os.File, error) {
 		return nil, err
 	}
 	return os.OpenFile(path, os.O_RDWR, 0)
+}
+
+func ResourceComponent(name string) string {
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(name)))
+}
+
+func ResourceName(component string) (string, error) {
+	b, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(component))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }

@@ -53,11 +53,11 @@ func NameValid(name string) bool {
 }
 
 func (s *FileStore) holderPath(resource string, slot int) string {
-	return filepath.Join(s.root, "holders", resource, strconv.Itoa(slot)+".json")
+	return filepath.Join(s.root, "holders", paths.ResourceComponent(resource), strconv.Itoa(slot)+".json")
 }
 
 func (s *FileStore) waiterPath(resource, id string) string {
-	return filepath.Join(s.root, "waiters", resource, id+".json")
+	return filepath.Join(s.root, "waiters", paths.ResourceComponent(resource), id+".json")
 }
 
 func (s *FileStore) eventsPath() string {
@@ -148,7 +148,7 @@ func (s *FileStore) ClearHolder(resource string, slot int) error {
 }
 
 func (s *FileStore) Waiters(resource string) ([]Waiter, error) {
-	dir := filepath.Join(s.root, "waiters", resource)
+	dir := filepath.Join(s.root, "waiters", paths.ResourceComponent(resource))
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -305,8 +305,12 @@ func (s *FileStore) Resources() ([]string, error) {
 			return nil, err
 		}
 		for _, entry := range entries {
-			if entry.IsDir() {
-				seen[entry.Name()] = true
+			if !entry.IsDir() {
+				continue
+			}
+			name, err := paths.ResourceName(entry.Name())
+			if err == nil && NameValid(name) && paths.ResourceComponent(name) == entry.Name() {
+				seen[name] = true
 			}
 		}
 	}

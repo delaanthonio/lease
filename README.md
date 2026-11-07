@@ -224,3 +224,5 @@ Manual acquisitions use the calling parent as owner; `--owner-pid` selects anoth
 A child inherits the lock descriptors. If it deliberately closes them and the wrapper is killed, the resource may be released while the child is still running.
 
 When changing from private to shared mode, choose a new state directory; lease refuses to republish existing private history to the group.
+
+Resource names are case-sensitive. Stop older lease processes before upgrading to this version; its resource files use a new encoding and do not coordinate with older versions.

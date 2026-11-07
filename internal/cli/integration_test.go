@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/delaanthonio/lease/internal/paths"
 )
 
 // The integration suite builds the real lease binary and drives it as
@@ -466,7 +468,7 @@ func TestSharedConfigAndManualSet(t *testing.T) {
 	for _, item := range []struct {
 		path string
 		mode os.FileMode
-	}{{state, 0770}, {filepath.Join(state, "locks", "pool", "slot-1.lock"), 0660}, {filepath.Join(state, "holders", "pool", "1.json"), 0660}} {
+	}{{state, 0770}, {filepath.Join(state, "locks", paths.ResourceComponent("pool"), "slot-1.lock"), 0660}, {filepath.Join(state, "holders", paths.ResourceComponent("pool"), "1.json"), 0660}} {
 		info, err := os.Stat(item.path)
 		if err != nil || info.Mode().Perm() != item.mode {
 			t.Fatalf("mode %s: %v %v", item.path, info, err)

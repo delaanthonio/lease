@@ -4,14 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/delaanthonio/lease/internal/config"
 	"github.com/delaanthonio/lease/internal/identity"
 	"github.com/delaanthonio/lease/internal/lock"
+	"github.com/delaanthonio/lease/internal/paths"
 	"github.com/delaanthonio/lease/internal/proc"
 	"github.com/delaanthonio/lease/internal/store"
+	"path/filepath"
 )
 
 // fixture gives one test a shared state directory and in-memory store, so
@@ -377,24 +380,130 @@ func TestAcquireOneFailsWhenAllSlotsBusy(t *testing.T) {
 	busyResource(t, err)
 }
 
+type eventHookStore struct {
+	store.Store
+	hook func(store.Event)
+}
+
+func (s *eventHookStore) AppendEvent(event store.Event) error {
+	if s.hook != nil {
+		s.hook(event)
+	}
+	return s.Store.AppendEvent(event)
+}
+
 func TestBoundedWaitCannotAcquireAfterDeadline(t *testing.T) {
 	f := newFixture(t)
 	holder, err := f.options().Acquire([]string{"db"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	go func() { time.Sleep(40 * time.Millisecond); holder.Release(); close(done) }()
+	defer holder.Release()
+	base := time.Unix(1000, 0)
+	afterWait, calls := false, 0
 	waiter := f.options()
-	waiter.Wait = 10 * time.Millisecond
-	waiter.PollInterval = 150 * time.Millisecond
+	waiter.Wait = time.Second
+	waiter.PollInterval = time.Nanosecond
+	waiter.Now = func() time.Time {
+		if afterWait {
+			calls++
+			if calls >= 3 {
+				return base.Add(2 * time.Second)
+			}
+		}
+		return base
+	}
+	waiter.Store = &eventHookStore{Store: f.store, hook: func(e store.Event) {
+		if e.Kind == store.EventWait && !afterWait {
+			holder.Release()
+			afterWait = true
+		}
+	}}
 	got, err := waiter.Acquire([]string{"db"})
 	if err == nil {
 		got.Release()
 		t.Fatal("acquired after the deadline")
 	}
 	busyResource(t, err)
-	<-done
+	if !afterWait {
+		t.Fatal("the initial attempt did not encounter contention")
+	}
+}
+
+func TestWaitDeadlineCoversAllResources(t *testing.T) {
+	f := newFixture(t)
+	holder, err := f.options().Acquire([]string{"a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	base := time.Unix(1000, 0)
+	now := base
+	waited := false
+	waiter := f.options()
+	waiter.Wait = time.Second
+	waiter.PollInterval = time.Nanosecond
+	waiter.Now = func() time.Time { return now }
+	waiter.Store = &eventHookStore{Store: f.store, hook: func(e store.Event) {
+		if e.Kind == store.EventWait && !waited {
+			waited = true
+			holder.Release()
+		}
+		if e.Kind == store.EventAcquire && e.Resource == "a" {
+			now = base.Add(2 * time.Second)
+		}
+	}}
+	got, err := waiter.Acquire([]string{"a", "b"})
+	if err == nil {
+		got.Release()
+		t.Fatal("acquired later resource after deadline")
+	}
+	if busyResource(t, err).Resource != "b" || !waited {
+		t.Fatalf("unexpected failure: %v", err)
+	}
+	free := f.options()
+	free.Wait = time.Nanosecond
+	a, err := free.Acquire([]string{"a"})
+	if err != nil {
+		t.Fatalf("partial lock leaked: %v", err)
+	}
+	a.Release()
+}
+
+func TestCaseDistinctResourcesCoordinateIndependently(t *testing.T) {
+	dir := t.TempDir()
+	if strings.EqualFold(lock.Dir(dir, "A"), lock.Dir(dir, "a")) {
+		t.Fatal("case-insensitive filesystem aliases resource paths")
+	}
+	st := store.NewFileStore(dir)
+	opts := &Options{StateDir: dir, Store: st, Requested: 1, Wait: time.Second, Config: &config.Config{Resources: map[string]config.Resource{"A": {Slots: 2}, "a": {Slots: 1}}}}
+	acq, err := opts.Acquire([]string{"A", "a"})
+	if err != nil {
+		t.Fatalf("case-distinct acquisition: %v", err)
+	}
+	defer acq.Release()
+	views, err := Inspect(dir, st, opts.Config, []string{"A", "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 2 || views[0].Resource != "A" || views[0].Total != 2 || views[0].Used != 1 || views[1].Resource != "a" || views[1].Total != 1 || views[1].Used != 1 {
+		t.Fatalf("views: %+v", views)
+	}
+	names, err := st.Resources()
+	if err != nil || len(names) != 2 || names[0] != "A" || names[1] != "a" {
+		t.Fatalf("resources: %v, %v", names, err)
+	}
+	if err := st.EnqueueWaiter(&store.Waiter{ID: "upper", Resource: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.EnqueueWaiter(&store.Waiter{ID: "lower", Resource: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	upper, _ := st.Waiters("A")
+	lower, _ := st.Waiters("a")
+	if len(upper) != 1 || upper[0].ID != "upper" || len(lower) != 1 || lower[0].ID != "lower" {
+		t.Fatalf("waiters: %v, %v", upper, lower)
+	}
 }
 
 func TestInspectRejectsUnsafeResourcePaths(t *testing.T) {
@@ -403,5 +512,56 @@ func TestInspectRejectsUnsafeResourcePaths(t *testing.T) {
 		if _, err := Inspect(f.stateDir, f.store, nil, []string{name}); err == nil {
 			t.Fatalf("accepted %q", name)
 		}
+	}
+}
+
+func TestAcquireCleansDeadWaiter(t *testing.T) {
+	dir := t.TempDir()
+	st := store.NewFileStore(dir)
+	if err := st.EnqueueWaiter(&store.Waiter{ID: "dead", Resource: "db", PID: 999999999, ProcStart: "gone"}); err != nil {
+		t.Fatal(err)
+	}
+	opts := &Options{StateDir: dir, Store: st, Wait: time.Nanosecond}
+	acquired, err := opts.Acquire([]string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acquired.Release()
+	ticket := filepath.Join(dir, "waiters", paths.ResourceComponent("db"), "dead.json")
+	if _, err := os.Stat(ticket); !os.IsNotExist(err) {
+		t.Fatalf("dead waiter's persisted ticket remains: %v", err)
+	}
+}
+
+func TestImmediateAttemptAcrossFreeResources(t *testing.T) {
+	f := newFixture(t)
+	opts := f.options()
+	opts.Wait = time.Nanosecond
+	acq, err := opts.Acquire([]string{"a", "b"})
+	if err != nil {
+		t.Fatalf("immediately available set was rejected: %v", err)
+	}
+	acq.Release()
+}
+
+func TestDeadlineCoversRecordingBetweenResources(t *testing.T) {
+	f := newFixture(t)
+	base := time.Unix(1000, 0)
+	now := base
+	opts := f.options()
+	opts.Wait = time.Second
+	opts.Now = func() time.Time { return now }
+	opts.Store = &eventHookStore{Store: f.store, hook: func(e store.Event) {
+		if e.Kind == store.EventAcquire && e.Resource == "a" {
+			now = base.Add(2 * time.Second)
+		}
+	}}
+	acq, err := opts.Acquire([]string{"a", "b"})
+	if err == nil {
+		acq.Release()
+		t.Fatal("acquired later resource after deadline")
+	}
+	if busyResource(t, err).Resource != "b" {
+		t.Fatalf("unexpected failure: %v", err)
 	}
 }

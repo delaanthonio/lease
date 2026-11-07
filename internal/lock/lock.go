@@ -16,7 +16,7 @@ import (
 
 // Dir returns the lock-file directory for a resource under the state root.
 func Dir(root, resource string) string {
-	return filepath.Join(root, "locks", resource)
+	return filepath.Join(root, "locks", paths.ResourceComponent(resource))
 }
 
 // OpenSlot opens (creating if needed) the lock file for one slot of a

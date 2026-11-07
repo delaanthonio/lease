@@ -124,6 +124,7 @@ type Acquired struct {
 	units  []unit
 	files  map[unit]*os.File
 	waiter map[string]string // resource -> waiter ticket id
+	waited bool
 }
 
 // ValidateNames rejects resource names that cannot be stored as files.
@@ -207,7 +208,7 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 	}
 	first := true
 	for {
-		if !first && !deadline.IsZero() && !o.now().Before(deadline) {
+		if (!first || a.waited || (len(a.units) > 0 && o.Wait > time.Nanosecond)) && !deadline.IsZero() && !o.now().Before(deadline) {
 			return o.busyAt(resource)
 		}
 		first = false
@@ -237,6 +238,7 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 			f.Close()
 		}
 		if len(taken) >= want {
+			_, _ = o.Store.Waiters(resource)
 			if id := a.waiter[resource]; id != "" {
 				_ = o.Store.DropWaiter(id)
 				delete(a.waiter, resource)
@@ -255,6 +257,7 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 		}
 		// Not enough slots free together: hold nothing while waiting.
 		a.dropTentative(taken)
+		a.waited = true
 		if !o.waitRound(a, resource, deadline) {
 			if o.Context != nil && o.Context.Err() != nil {
 				return o.Context.Err()
@@ -318,6 +321,7 @@ func (o *Options) recordTakeover(u unit, holder *store.Holder, kind, reason stri
 // caller should give up.
 func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bool {
 	if a.waiter[resource] == "" {
+		_, _ = o.Store.Waiters(resource)
 		id, err := randomID("wait-")
 		if err == nil {
 			ticket := &store.Waiter{
