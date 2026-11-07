@@ -318,6 +318,32 @@ func TestAcquireReleaseTokenFlow(t *testing.T) {
 	}
 }
 
+func TestAcquireReleasesResourcesWhenTokenOutputFails(t *testing.T) {
+	dir, env := leaseEnv(t)
+	output, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+
+	cmd := exec.Command(leaseBin, "acquire", "db", "ports")
+	cmd.Env = env
+	cmd.Stdout = output
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil || !strings.Contains(stderr.String(), "write token") {
+		t.Fatalf("acquire error = %v, stderr = %q", err, stderr.String())
+	}
+	token, stderrText, code := runLease(t, env, 10*time.Second, "acquire", "db", "ports", "--no-wait")
+	if code != 0 {
+		t.Fatalf("resources remain held: exit %d, stderr %q", code, stderrText)
+	}
+	_, stderrText, code = runLease(t, env, 10*time.Second, "release", strings.TrimSpace(token))
+	if code != 0 {
+		t.Fatalf("release: exit %d, stderr %q", code, stderrText)
+	}
+}
+
 func TestForceReleaseLogsReason(t *testing.T) {
 	dir, env := leaseEnv(t)
 

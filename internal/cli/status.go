@@ -308,7 +308,7 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1
 	}
-	tok, _, err := startKeeper(keeperFlags{StateDir: leaseOpts.StateDir, Names: names, Slots: opts.Slots, OwnerPID: *ownerPID, OwnerStart: ownerStart, Token: token, Config: opts.Config, Wait: opts.Wait, NoWait: opts.NoWait, TTL: ttl, Holder: holderIdentity{User: leaseOpts.Identity.User, TaskID: leaseOpts.Identity.TaskID, CIRunID: leaseOpts.Identity.CIRunID, CIJob: leaseOpts.Identity.CIJob, Command: "lease"}})
+	tok, release, err := startKeeper(keeperFlags{StateDir: leaseOpts.StateDir, Names: names, Slots: opts.Slots, OwnerPID: *ownerPID, OwnerStart: ownerStart, Token: token, Config: opts.Config, Wait: opts.Wait, NoWait: opts.NoWait, TTL: ttl, Holder: holderIdentity{User: leaseOpts.Identity.User, TaskID: leaseOpts.Identity.TaskID, CIRunID: leaseOpts.Identity.CIRunID, CIJob: leaseOpts.Identity.CIJob, Command: "lease"}})
 	if err != nil {
 		// Output is best effort; preserve the command result.
 		_, _ = fmt.Fprintf(stderr, "lease: %s\n", err)
@@ -318,8 +318,11 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	// Output is best effort; preserve the command result.
-	_, _ = fmt.Fprintln(stdout, tok)
+	if _, err := fmt.Fprintln(stdout, tok); err != nil {
+		release()
+		_, _ = fmt.Fprintf(stderr, "lease: write token: %s\n", err)
+		return 1
+	}
 	return 0
 }
 
