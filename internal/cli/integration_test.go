@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/delaanthonio/lease/internal/identity"
 	"github.com/delaanthonio/lease/internal/lock"
 	"github.com/delaanthonio/lease/internal/paths"
 	"github.com/delaanthonio/lease/internal/store"
@@ -339,6 +341,45 @@ func TestForceReleaseLogsReason(t *testing.T) {
 	events := readFile(t, filepath.Join(dir, "events.ndjson"))
 	if !strings.Contains(events, "force-release") || !strings.Contains(events, "stuck after crash") {
 		t.Fatalf("force-release reason not logged: %s", events)
+	}
+}
+
+// TestReleaseRefusesOutOfRangeHolderPid pins the release path against a
+// corrupt or group-written holder record: a PID outside the kernel's
+// pid_t range (0, negative, or above the signed 32-bit maximum) carries
+// signal semantics (0 targets the process group, -1 every permitted
+// process), so release must refuse to signal it and treat the record as
+// stale instead.
+func TestReleaseRefusesOutOfRangeHolderPid(t *testing.T) {
+	for _, pid := range []int{0, -1, math.MaxInt32 + 1} {
+		t.Run(fmt.Sprintf("pid_%d", pid), func(t *testing.T) {
+			dir, env := leaseEnv(t)
+			st := store.NewFileStore(dir)
+			h := &store.Holder{
+				Resource:   "db",
+				Slot:       1,
+				Token:      "l-corrupt",
+				PID:        pid,
+				ProcStart:  "timeless",
+				User:       identity.CurrentUser(),
+				AcquiredAt: time.Now().UTC(),
+			}
+			if err := st.SetHolder(h); err != nil {
+				t.Fatalf("seed corrupt holder: %v", err)
+			}
+
+			stdout, _, code := runLease(t, env, 10*time.Second, "release", "l-corrupt")
+			if code != 0 {
+				t.Fatalf("release of corrupt record exit = %d, stdout=%q", code, stdout)
+			}
+			cur, err := st.Holder("db", 1)
+			if err != nil {
+				t.Fatalf("read holder after release: %v", err)
+			}
+			if cur != nil {
+				t.Fatalf("corrupt holder record survived release: %+v", cur)
+			}
+		})
 	}
 }
 

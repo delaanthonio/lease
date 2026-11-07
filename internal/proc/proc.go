@@ -7,13 +7,23 @@ package proc
 import (
 	"errors"
 	"fmt"
+	"math"
 	"syscall"
 )
+
+// validPID reports whether a value can name a real process: positive and
+// within the kernel's pid_t range. Values outside it can never name a
+// process, but they carry signal semantics (0 targets the whole process
+// group, -1 every permitted process), so a corrupt or group-written
+// holder record must never reach kill with one.
+func validPID(pid int) bool {
+	return pid > 0 && pid <= math.MaxInt32
+}
 
 // Alive reports whether a process with this PID currently exists. A PID
 // that exists but is owned by another user still counts as alive.
 func Alive(pid int) bool {
-	if pid <= 0 {
+	if !validPID(pid) {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
@@ -35,7 +45,7 @@ func Fingerprint(pid int) string {
 // fingerprint counts as stale so a record that cannot be verified never
 // blocks a slot forever.
 func HolderIsStale(pid int, recorded string) error {
-	if pid <= 0 {
+	if !validPID(pid) {
 		return fmt.Errorf("holder pid %d is not valid", pid)
 	}
 	if !Alive(pid) {

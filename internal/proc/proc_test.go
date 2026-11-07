@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"testing"
@@ -33,6 +34,25 @@ func TestStaleForDeadPid(t *testing.T) {
 	}
 	if err := HolderIsStale(-1, ""); err == nil {
 		t.Fatal("a negative pid must be stale")
+	}
+}
+
+func TestPidsOutsidePidTRangeAreInvalid(t *testing.T) {
+	// pid_t is a signed 32-bit type: values above its maximum can never
+	// name a process, and a truncated or wrapped kill call with one could
+	// signal an unintended target. Zero and negatives carry signal
+	// semantics (process group, all permitted processes) and are equally
+	// invalid as holder records.
+	for _, pid := range []int{0, -1, math.MinInt32, math.MaxInt32 + 1, math.MaxInt64} {
+		if Alive(pid) {
+			t.Fatalf("Alive(%d) = true, want false", pid)
+		}
+		if Fingerprint(pid) != "" {
+			t.Fatalf("Fingerprint(%d) = %q, want empty", pid, Fingerprint(pid))
+		}
+		if err := HolderIsStale(pid, ""); err == nil {
+			t.Fatalf("HolderIsStale(%d) = nil, want invalid-pid error", pid)
+		}
 	}
 }
 
