@@ -32,6 +32,10 @@ source with Go 1.25 or newer:
 go install github.com/delaanthonio/lease/cmd/lease@latest
 ```
 
+For a privileged install, every destination path component must be a
+root-owned directory that is not group- or world-writable, and must not be
+a symlink. Missing directories are created after their ancestors are checked.
+
 ## Quick start
 
 Wrap the command that uses the scarce resource:
@@ -107,7 +111,7 @@ keeps the convention visible.
 | `lease status [NAME...] [--json]` | show holders, ages, slot usage, waiters |
 | `lease acquire NAME...` | hold a lock manually; prints a release token |
 | `lease release TOKEN` | release a manually acquired lock |
-| `lease force-release NAME --reason TEXT` | clear a stuck lock; captain-word only |
+| `lease force-release NAME --reason TEXT` | clear a stale holder record |
 | `lease config` | show resolved resources and slot counts |
 
 ### Manual acquire and release
@@ -132,6 +136,7 @@ reason and the previous holder to history. It never kills
 a live process: a slot held by a running process stays held until that
 process exits. Restrict it to whoever runs the machine (the "captain
 word"); everyday automation should never need it.
+This restriction is a convention, not an authorization check by `lease`.
 
 ## Slots and configuration
 
@@ -213,9 +218,9 @@ Apache-2.0. Copyright 2026 Dela Anthonio. See [LICENSE](LICENSE) and
 
 ### Coordination and privacy
 
-Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History is private (0600) by default and group-readable and writable (0660) in shared mode. The shared directory must be owned by the common group and have the setgid bit set so new files inherit that group. A shared directory created under a parent without the setgid bit can briefly carry the creator's group before group inheritance is fully established; a later change plans to publish shared directories atomically. Every participant coordinating through the same state directory must configure identical slot counts for each resource, and slot counts should not change while leases are active: callers configuring different counts can both use a resource that should be exclusive.
+Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History is private (0600) by default and group-readable and writable (0660) in shared mode. The shared directory must be owned by the common group and have the setgid bit set so new files inherit that group. On Linux, a new shared directory under a parent without setgid can be used before its own setgid bit is applied, so children created during that window may inherit the wrong group. Every participant coordinating through the same state directory must configure identical slot counts for each resource, and slot counts should not change while leases are active: callers configuring different counts can both use a resource that should be exclusive.
 
-Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments in private mode; shared mode refuses full command recording. History retains at most 1,000 events and 30 days, whichever is smaller. Appends and history reads prune expired entries; if a read encounters a busy history lock, it filters the results and leaves pruning on disk for a later operation. No cleanup runs while lease is idle. History is best-effort diagnostics, not an audit trail; events can be dropped under contention. Force-release records its reason before clearing a stale holder. Command recording is off by default; files outside lease are not touched by retention cleanup.
+Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments in private mode; shared mode refuses full command recording. History retains at most 1,000 events and 30 days, whichever is smaller. Appends and history reads prune expired entries; if a read encounters a busy history lock, it filters the results and leaves pruning on disk for a later operation. No cleanup runs while lease is idle. History is best-effort diagnostics, not an audit trail; events can be dropped under contention. Force-release records its reason before clearing a stale holder. Full command recording is off by default; files outside lease are not touched by retention cleanup.
 
 Manual acquisitions use the calling parent as owner; `--owner-pid` selects another owner. The default TTL is 30 minutes, configurable with `manual_ttl = "30m"` or `--ttl`. `lease release NAME` also releases a manual acquisition with the same holder identity.
 
