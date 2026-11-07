@@ -1,5 +1,5 @@
 // Package store defines the metadata interface for lease: holder records,
-// waiter tickets, and the append-only event history.
+// waiter tickets, and event history.
 //
 // Commands never touch the metadata files directly; they go through the
 // Store interface so a future implementation (for example SQLite-backed
@@ -16,7 +16,7 @@ import (
 
 var ErrHistoryBusy = errors.New("history lock is busy")
 
-// Event kinds written to the append-only history.
+// Event kinds written to history.
 const (
 	EventAcquire      = "acquire"
 	EventRelease      = "release"
@@ -61,8 +61,7 @@ type Waiter struct {
 	Since     time.Time `json:"since"`
 }
 
-// Event is one entry in the append-only history, including every
-// force-release with its reason and the previous holder.
+// Event is one history entry, including a force-release reason and previous holder.
 type Event struct {
 	At       time.Time `json:"at"`
 	Kind     string    `json:"kind"`
@@ -97,7 +96,7 @@ type Store interface {
 	// not an error.
 	DropWaiter(id string) error
 
-	// AppendEvent adds one entry to the append-only history.
+	// AppendEvent adds one entry to history.
 	AppendEvent(e Event) error
 	// Events returns the history, oldest first.
 	Events() ([]Event, error)

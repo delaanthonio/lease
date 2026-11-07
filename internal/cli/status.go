@@ -137,7 +137,7 @@ func dedup(sorted []string) []string {
 // ForceReleaseCommand implements lease force-release NAME --reason TEXT.
 // It is the captain's tool for stuck locks: it clears holder records whose
 // process is gone and logs the reason and previous holder to the
-// append-only history. It never kills a live process; a slot held by a
+// history. It never kills a live process; a slot held by a
 // running process stays held until that process exits.
 func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("force-release", stderr)
@@ -215,7 +215,7 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 }
 
 // AcquireCommand implements lease acquire: take slots manually and print
-// one release token per slot. Each slot is held by a small keeper process
+// one release token for the acquisition. The slots are held by a keeper process
 // until 'lease release TOKEN' signals it or it is killed; a killed keeper
 // leaves the slot to the stale-holder takeover machinery.
 func AcquireCommand(argv []string, stdout, stderr io.Writer) int {

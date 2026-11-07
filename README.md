@@ -6,9 +6,9 @@ skills, and CI jobs share one machine, `lease` keeps them from stepping on
 each other.
 
 Locks are kernel file locks (`flock(2)`) in a machine-wide directory. There
-is no daemon: a lock is held by a process, and the kernel releases it the
-moment that process dies, even after a crash or a `kill -9`. Holder records
-detect stale holders and take over automatically.
+is no daemon: the kernel releases a lock when all processes holding its
+file descriptor close it or exit, even after a crash or a `kill -9`.
+Holder records detect stale holders and take over automatically.
 
 ```sh
 lease run ios-simulator -- xcrun simctl boot "iPhone 16"
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/delaanthonio/lease/main/install.sh 
 
 This installs the `lease` binary for your platform into `~/.local/bin` (or
 `/usr/local/bin` with `sudo`, or any directory with `INSTALL_DIR=...`).
-Binaries are built for macOS (arm64) and Linux (amd64, arm64). Or build from
+Binaries are built for macOS and Linux (amd64, arm64). Or build from
 source with Go 1.25 or newer:
 
 ```sh
@@ -51,8 +51,9 @@ lease run build -- xcodebuild -scheme App build
 ```
 
 `lease run` acquires every named lock in a fixed sorted order, runs the
-command with inherited stdio, always releases the locks when the command
-exits (including on signals), and returns the command's exit code.
+command with inherited stdio, closes its lock descriptors when the command
+exits (including on signals), and returns the command's exit code. A child
+that retains an inherited descriptor keeps the corresponding lock held.
 
 Inspect what is held:
 
@@ -127,7 +128,7 @@ not leak.
 
 `lease force-release NAME --reason TEXT` is the captain's tool for stuck
 locks. It clears holder records whose process is gone and writes the
-reason and the previous holder to the append-only history. It never kills
+reason and the previous holder to history. It never kills
 a live process: a slot held by a running process stays held until that
 process exits. Restrict it to whoever runs the machine (the "captain
 word"); everyday automation should never need it.
@@ -179,19 +180,19 @@ lease: resource "db" slot 1 is held by user:alice pid 4242 seed-db since 2026-11
 
 ## Where state lives
 
-Everything is in one machine-wide directory, outside any worktree:
-`$LEASE_STATE_DIR`, else `lease` under the user state dir
+By default state is outside any worktree. The directory is chosen from
+`$LEASE_DIR`, then `$LEASE_STATE_DIR`, then `dir` in the config, or `lease` under the user state dir
 (`$XDG_STATE_HOME/lease` or `~/.local/state/lease` on Linux,
 `~/Library/Application Support/lease` on macOS). Inside:
 
-- `locks/<resource>/slot-N.lock` - the kernel lock files; holding a slot
+- `locks/<encoded-resource>/slot-N.lock` - the kernel lock files; holding a slot
   means holding an exclusive `flock` on one of these
 - `holders/`, `waiters/` - small JSON records: who holds what, who waits
-- `events.ndjson` - append-only history, including every force-release
+- `events.ndjson` - retained history, including successful force-releases
 
 Stale holders (pid gone, or the pid was reused by a different process) are
-detected and taken over automatically, with a note on stderr and an entry
-in the history. `--ttl` releases a hung holder only when it is also
+detected and taken over automatically, with a note on stderr and a best-effort
+entry in the history. `--ttl` releases a hung holder only when it is also
 unresponsive: a record older than the TTL whose process is gone is evicted,
 while a live process keeps its lock no matter how long it has held it.
 
@@ -215,7 +216,7 @@ Apache-2.0. Copyright 2026 Dela Anthonio. See [LICENSE](LICENSE) and
 
 Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History is private (0600) by default and group-readable and writable (0660) in shared mode. The shared directory must be owned by the common group and have the setgid bit set so new files inherit that group.
 
-Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments in private mode; shared mode refuses full command recording. History retains at most 1,000 events and 30 days, whichever is smaller, enforced on append, history reads, and status. History is best-effort diagnostics, not an audit trail; events can be dropped under contention. Force-release records its reason before clearing a stale holder. Command recording is off by default; files outside lease are not touched by retention cleanup.
+Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments in private mode; shared mode refuses full command recording. History retains at most 1,000 events and 30 days, whichever is smaller. Appends and history reads prune expired entries; if a read encounters a busy history lock, it filters the results and leaves pruning on disk for a later operation. No cleanup runs while lease is idle. History is best-effort diagnostics, not an audit trail; events can be dropped under contention. Force-release records its reason before clearing a stale holder. Command recording is off by default; files outside lease are not touched by retention cleanup.
 
 Manual acquisitions use the calling parent as owner; `--owner-pid` selects another owner. A keeper releases when its owner exits or its TTL expires. The default TTL is 30 minutes, configurable with `manual_ttl = "30m"` or `--ttl`. A single token represents the complete acquisition; `lease release NAME` also releases a manual acquisition with the same holder identity.
 
