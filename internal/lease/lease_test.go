@@ -1,6 +1,7 @@
 package lease
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -38,6 +39,34 @@ func (f *fixture) options() *Options {
 		Now:          func() time.Time { return time.Now().UTC() },
 		PollInterval: 5 * time.Millisecond,
 	}
+}
+
+// TestReleaseRecordsEventAfterContextCancel pins the release history: a
+// caller whose context is already cancelled by the time Release runs
+// (the wrapped command failed, or a wait timed out) must still leave its
+// release event in the history.
+func TestReleaseRecordsEventAfterContextCancel(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := f.options()
+	opts.Context = ctx
+	acq, err := opts.Acquire([]string{"db"})
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	cancel()
+	acq.Release()
+	events, err := f.store.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == store.EventRelease && e.Resource == "db" {
+			return
+		}
+	}
+	t.Fatalf("release event missing after cancelled context: %+v", events)
 }
 
 func busyResource(t *testing.T, err error) *BusyError {

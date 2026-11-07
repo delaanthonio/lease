@@ -494,7 +494,11 @@ func (a *Acquired) release(ctx context.Context) {
 		released = append(released, u)
 	}
 	for _, u := range released {
-		if err := store.AppendEventContext(ctx, a.opts.Store, store.Event{
+		// The caller's context may already be cancelled by the time
+		// release runs (for example after the wrapped command failed or
+		// --no-wait timed out); the release event must still be recorded,
+		// so drop only the cancellation and keep the values.
+		if err := store.AppendEventContext(context.WithoutCancel(ctx), a.opts.Store, store.Event{
 			At:       a.opts.now().UTC(),
 			Kind:     store.EventRelease,
 			Resource: u.resource,
