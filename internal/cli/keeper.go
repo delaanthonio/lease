@@ -281,43 +281,58 @@ func releaseToken(token, cfgPath string) error {
 	if err != nil {
 		return err
 	}
-	for _, h := range holders {
-		id := identityFromEnv()
+	var selected *store.Holder
+	id := identityFromEnv()
+	for i := range holders {
+		h := &holders[i]
 		matchName := h.Resource == token && h.User == id.User && h.TaskID == id.TaskID && h.CIRunID == id.CIRunID && h.CIJob == id.CIJob
-		if h.Token == "" || (h.Token != token && !matchName) {
-			continue
+		if h.Token != "" && (h.Token == token || matchName) {
+			selected = h
+			break
 		}
-		if h.ProcStart != "" && proc.HolderIsStale(h.PID, h.ProcStart) == nil {
-			if err := syscall.Kill(h.PID, syscall.SIGTERM); err != nil {
-				return err
-			}
-			// The keeper clears its own record; wait briefly for it.
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
-				cur, err := st.Holder(h.Resource, h.Slot)
-				if err == nil && (cur == nil || cur.Token != h.Token) {
-					return nil
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-		}
-		// The keeper is gone: clear the stale record directly.
-		cleared, err := clearObserved(st, dir, &h)
-		if err != nil {
+	}
+	if selected == nil {
+		return fmt.Errorf("unknown token or resource %q", token)
+	}
+	token = selected.Token
+	if selected.ProcStart != "" && proc.HolderIsStale(selected.PID, selected.ProcStart) == nil {
+		if err := syscall.Kill(selected.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 			return err
 		}
-		if !cleared {
-			return fmt.Errorf("holder is still active or has changed")
-		}
-		_ = st.AppendEvent(store.Event{
-			Kind:     store.EventRelease,
-			Resource: h.Resource,
-			Slot:     h.Slot,
-			Reason:   "keeper already gone; stale record cleared",
-		})
-		return nil
 	}
-	return fmt.Errorf("unknown token %q", token)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		remaining := false
+		for _, h := range holders {
+			if h.Token != token {
+				continue
+			}
+			cur, err := st.Holder(h.Resource, h.Slot)
+			if err != nil {
+				return err
+			}
+			if cur == nil || *cur != h {
+				continue
+			}
+			remaining = true
+			if proc.HolderIsStale(h.PID, h.ProcStart) != nil {
+				cleared, err := clearObserved(st, dir, &h)
+				if err != nil {
+					return err
+				}
+				if cleared {
+					if err := st.AppendEvent(store.Event{Kind: store.EventRelease, Resource: h.Resource, Slot: h.Slot, Reason: "keeper already gone; stale record cleared"}); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if !remaining {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out releasing token %q", token)
 }
 
 // newToken returns a fresh release token.

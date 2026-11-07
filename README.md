@@ -13,7 +13,7 @@ detect stale holders and take over automatically.
 ```sh
 lease run ios-simulator -- xcrun simctl boot "iPhone 16"
 lease run dev-port-3000 -- ./scripts/dev-server
-lease run db --slots 2 -- ./scripts/parallel-migration
+lease run db -- ./scripts/parallel-migration
 lease status
 ```
 
@@ -43,8 +43,11 @@ lease run ios-simulator -- xcrun simctl boot "iPhone 16"
 # Wait at most five minutes, then give up.
 lease run db --wait 5m -- ./scripts/seed-db
 
-# Counted slots: two callers may hold the resource at once.
-lease run build --slots 2 -- xcodebuild -scheme App build
+# Counted slots: configure two slots, then each caller takes one.
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/lease"
+export LEASE_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/lease/config.toml"
+printf '[resources.build]\nslots = 2\n' > "$LEASE_CONFIG"
+lease run build -- xcodebuild -scheme App build
 ```
 
 `lease run` acquires every named lock in a fixed sorted order, runs the
@@ -210,9 +213,9 @@ Apache-2.0. Copyright 2026 Dela Anthonio. See [LICENSE](LICENSE) and
 
 ### Coordination and privacy
 
-Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History remains private (0600).
+Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History is private (0600) by default and group-readable and writable (0660) in shared mode. The shared directory must be owned by the common group and have the setgid bit set so new files inherit that group.
 
-Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments. History retains at most 1,000 events and 30 days, whichever is smaller.
+Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments in private mode; shared mode refuses full command recording. History retains at most 1,000 events and 30 days, whichever is smaller.
 
 Manual acquisitions use the calling parent as owner; `--owner-pid` selects another owner. A keeper releases when its owner exits or its TTL expires. The default TTL is 30 minutes, configurable with `manual_ttl = "30m"` or `--ttl`. A single token represents the complete acquisition; `lease release NAME` also releases a manual acquisition with the same holder identity.
 

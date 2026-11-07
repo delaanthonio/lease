@@ -426,12 +426,19 @@ func TestKilledWaiterIsRemoved(t *testing.T) {
 	if err := waiter.Start(); err != nil {
 		t.Fatal(err)
 	}
+	observed := false
 	for i := 0; i < 100; i++ {
 		out, _, _ := runLease(t, env, 5*time.Second, "status", "--json", "db")
 		if strings.Contains(out, `"waiting":1`) {
+			observed = true
 			break
 		}
 		time.Sleep(30 * time.Millisecond)
+	}
+	if !observed {
+		_ = waiter.Process.Kill()
+		_ = waiter.Wait()
+		t.Fatal("waiter never appeared")
 	}
 	_ = waiter.Process.Kill()
 	_ = waiter.Wait()
@@ -464,5 +471,94 @@ func TestSharedConfigAndManualSet(t *testing.T) {
 		if err != nil || info.Mode().Perm() != item.mode {
 			t.Fatalf("mode %s: %v %v", item.path, info, err)
 		}
+	}
+}
+
+func TestDescendantRetainsLockAfterWrapperExit(t *testing.T) {
+	_, env := leaseEnv(t)
+	_, stderr, code := runLease(t, env, 5*time.Second, "run", "db", "--", "/bin/sh", "-c", "sleep 2 </dev/null >/dev/null 2>&1 &")
+	if code != 0 {
+		t.Fatalf("wrapper failed: %d %s", code, stderr)
+	}
+	out, _, code := runLease(t, env, 5*time.Second, "status", "--json", "db")
+	if code != 0 || !strings.Contains(out, `"used":1`) {
+		t.Fatalf("descendant not shown as held: %s", out)
+	}
+	_, _, code = runLease(t, env, 5*time.Second, "run", "db", "--no-wait", "--", "/bin/echo")
+	if code != 75 {
+		t.Fatalf("descendant lost its lock: %d", code)
+	}
+	_, stderr, code = runLease(t, env, 5*time.Second, "run", "db", "--wait", "4s", "--", "/bin/echo")
+	if code != 0 {
+		t.Fatalf("lock not released after descendant: %d %s", code, stderr)
+	}
+}
+
+func TestPartialAcquisitionVisible(t *testing.T) {
+	_, env := leaseEnv(t)
+	blocker := exec.Command(leaseBin, "run", "b", "--", "/bin/sleep", "4")
+	blocker.Env = env
+	if err := blocker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Process.Kill(); _ = blocker.Wait() }()
+	waitForHolder(t, env, "b")
+	waiter := exec.Command(leaseBin, "run", "a", "b", "--", "/bin/echo")
+	waiter.Env = append(env, "FM_TASK_ID=partial")
+	if err := waiter.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = waiter.Process.Kill(); _ = waiter.Wait() }()
+	waitForHolder(t, env, "a")
+	out, _, code := runLease(t, env, 5*time.Second, "status", "--json", "a")
+	if code != 0 || !strings.Contains(out, "task:partial") {
+		t.Fatalf("partial holder missing: %s", out)
+	}
+}
+
+func TestManualReleaseCompletesSet(t *testing.T) {
+	_, env := leaseEnv(t)
+	token, stderr, code := runLease(t, env, 5*time.Second, "acquire", "a", "b")
+	if code != 0 {
+		t.Fatalf("acquire: %s", stderr)
+	}
+	_, stderr, code = runLease(t, env, 5*time.Second, "release", strings.TrimSpace(token))
+	if code != 0 {
+		t.Fatalf("release: %s", stderr)
+	}
+	for _, name := range []string{"a", "b"} {
+		_, stderr, code = runLease(t, env, 5*time.Second, "run", name, "--no-wait", "--", "/bin/echo")
+		if code != 0 {
+			t.Fatalf("%s still held: %s", name, stderr)
+		}
+	}
+}
+
+func TestSharedHistoryRecordsBothParticipants(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	state := filepath.Join(dir, "shared")
+	writeFile(t, cfg, fmt.Sprintf("dir = %q\nshared = true\n", state))
+	env := append(os.Environ(), "LEASE_CONFIG="+cfg, "LEASE_DIR=", "LEASE_STATE_DIR=")
+	for _, user := range []string{"first", "second"} {
+		_, stderr, code := runLease(t, append(env, "FM_TASK_ID="+user), 5*time.Second, "run", "db", "--", "/bin/echo", "secret")
+		if code != 0 {
+			t.Fatalf("participant %s: %s", user, stderr)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(state, "events.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(state, "events.ndjson"))
+	if err != nil || info.Mode().Perm() != 0660 {
+		t.Fatalf("history mode: %v %v", info, err)
+	}
+	if !strings.Contains(string(raw), "task:first") || !strings.Contains(string(raw), "task:second") || strings.Contains(string(raw), "secret") {
+		t.Fatalf("shared history: %s", raw)
+	}
+	_, _, code := runLease(t, env, 5*time.Second, "run", "db", "--record-command", "--", "/bin/echo", "secret")
+	if code == 0 {
+		t.Fatal("shared mode accepted full command recording")
 	}
 }

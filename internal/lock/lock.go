@@ -27,15 +27,9 @@ func OpenSlot(root, resource string, slot int) (*os.File, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, fmt.Sprintf("slot-%d.lock", slot))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, paths.FileMode())
+	f, err := paths.OpenFile(path)
 	if err != nil {
 		return nil, err
-	}
-	if paths.Shared {
-		if err := f.Chmod(paths.FileMode()); err != nil {
-			f.Close()
-			return nil, err
-		}
 	}
 	return f, nil
 }

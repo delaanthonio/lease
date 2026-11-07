@@ -93,6 +93,9 @@ func (r *RunOptions) prepare(stderr io.Writer) (*lease.Options, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Shared && (r.RecordCommand || cfg.RecordCommand) {
+		return nil, fmt.Errorf("full command recording is unavailable in shared mode")
+	}
 	if r.NoWait {
 		r.Wait = time.Nanosecond
 	}

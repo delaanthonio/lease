@@ -171,7 +171,7 @@ func (o *Options) Acquire(names []string) (*Acquired, error) {
 			return nil, err
 		}
 	}
-	return o.finish(a)
+	return a, nil
 }
 
 // AcquireOne takes a single slot of a resource, whichever index is free
@@ -193,25 +193,6 @@ func (o *Options) AcquireOne(resource string) (*Acquired, error) {
 	if err := o.acquireResource(a, resource, deadline); err != nil {
 		a.Release()
 		return nil, err
-	}
-	return o.finish(a)
-}
-
-// finish records holders and history for everything the acquisition took.
-func (o *Options) finish(a *Acquired) (*Acquired, error) {
-	for _, u := range a.units {
-		if err := o.recordHolder(u); err != nil {
-			a.Release()
-			return nil, err
-		}
-		_ = o.Store.AppendEvent(store.Event{
-			At:       o.now().UTC(),
-			Kind:     store.EventAcquire,
-			Resource: u.resource,
-			Slot:     u.slot,
-			Actor:    o.Identity.Label(),
-			Detail:   o.Command,
-		})
 	}
 	return a, nil
 }
@@ -255,9 +236,15 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 				_ = o.Store.DropWaiter(id)
 				delete(a.waiter, resource)
 			}
+			a.units = append(a.units, taken...)
 			for _, u := range taken {
-				a.units = append(a.units, u)
 				o.resolveExistingRecord(u)
+				if err := o.recordHolder(u); err != nil {
+					return err
+				}
+				if err := o.Store.AppendEvent(store.Event{At: o.now().UTC(), Kind: store.EventAcquire, Resource: u.resource, Slot: u.slot, Actor: o.Identity.Label(), Detail: o.Command}); err != nil {
+					return err
+				}
 			}
 			return nil
 		}
@@ -311,12 +298,14 @@ func (o *Options) resolveExistingRecord(u unit) {
 // event.
 func (o *Options) recordTakeover(u unit, holder *store.Holder, kind, reason string) {
 	_ = o.Store.ClearHolder(u.resource, u.slot)
-	_ = o.Store.AppendEvent(store.Event{
+	if err := o.Store.AppendEvent(store.Event{
 		At: o.now().UTC(), Kind: kind,
 		Resource: u.resource, Slot: u.slot,
 		Actor: o.Identity.Label(), Reason: reason,
 		Detail: DescribeHolder(holder),
-	})
+	}); err != nil {
+		o.note("record takeover: %s", err)
+	}
 }
 
 // waitRound queues a waiter ticket (once per resource) and sleeps until
@@ -340,10 +329,12 @@ func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bo
 			}
 			if err := o.Store.EnqueueWaiter(ticket); err == nil {
 				a.waiter[resource] = id
-				_ = o.Store.AppendEvent(store.Event{
+				if err := o.Store.AppendEvent(store.Event{
 					At: o.now().UTC(), Kind: store.EventWait,
 					Resource: resource, Actor: o.Identity.Label(),
-				})
+				}); err != nil {
+					o.note("record wait: %s", err)
+				}
 			}
 		}
 	}
@@ -415,17 +406,29 @@ func (a *Acquired) Release() {
 		if !ok {
 			continue
 		}
-		_ = a.opts.Store.ClearHolder(u.resource, u.slot)
-		_ = lock.Unlock(f)
 		_ = f.Close()
 		delete(a.files, u)
-		_ = a.opts.Store.AppendEvent(store.Event{
+		probe, err := lock.OpenSlot(a.opts.StateDir, u.resource, u.slot)
+		if err == nil {
+			held, lockErr := lock.TryLock(probe)
+			if lockErr == nil && held {
+				h, readErr := a.opts.Store.Holder(u.resource, u.slot)
+				if readErr == nil && h != nil && h.PID == os.Getpid() && h.ProcStart == proc.Fingerprint(os.Getpid()) && h.Token == a.opts.Token {
+					_ = a.opts.Store.ClearHolder(u.resource, u.slot)
+				}
+				_ = lock.Unlock(probe)
+			}
+			_ = probe.Close()
+		}
+		if err := a.opts.Store.AppendEvent(store.Event{
 			At:       a.opts.now().UTC(),
 			Kind:     store.EventRelease,
 			Resource: u.resource,
 			Slot:     u.slot,
 			Actor:    a.opts.Identity.Label(),
-		})
+		}); err != nil {
+			a.opts.note("record release: %s", err)
+		}
 	}
 	for resource, id := range a.waiter {
 		_ = a.opts.Store.DropWaiter(id)

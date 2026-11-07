@@ -226,16 +226,11 @@ func (s *FileStore) AppendEvent(e Event) error {
 	if err := paths.MkdirAll(s.root); err != nil {
 		return err
 	}
-	lf, err := os.OpenFile(filepath.Join(s.root, "events.lock"), os.O_CREATE|os.O_RDWR, paths.FileMode())
+	lf, err := paths.OpenFile(filepath.Join(s.root, "events.lock"))
 	if err != nil {
 		return err
 	}
 	defer lf.Close()
-	if paths.Shared {
-		if err = lf.Chmod(paths.FileMode()); err != nil {
-			return err
-		}
-	}
 	if err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
@@ -264,27 +259,7 @@ func (s *FileStore) AppendEvent(e Event) error {
 		b.Write(raw)
 		b.WriteByte('\n')
 	}
-	return writePrivateFileSync(s.eventsPath(), []byte(b.String()))
-}
-
-func writePrivateFileSync(path string, raw []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".history-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err = tmp.Write(raw); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err = tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return writeFileSync(s.eventsPath(), []byte(b.String()))
 }
 
 func (s *FileStore) Events() ([]Event, error) {
@@ -326,7 +301,11 @@ func (s *FileStore) Resources() ([]string, error) {
 			}
 		}
 	}
-	if events, err := s.Events(); err == nil {
+	events, err := s.Events()
+	if err != nil {
+		return nil, err
+	}
+	{
 		for _, e := range events {
 			if e.Resource != "" {
 				seen[e.Resource] = true
