@@ -44,10 +44,10 @@ mkdir -p "$install_dir"
 
 asset="${name}-${os}-${arch}"
 url="https://github.com/$repo/releases/download/$version/$asset"
-tmp=$(mktemp -t "$name.XXXXXX")
+tmp=$(mktemp "$install_dir/.$name.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 curl -fsSL -o "$tmp" "$url"
-chmod +x "$tmp"
+chmod 0755 "$tmp"
 mv "$tmp" "$install_dir/$name"
 trap - EXIT
 
