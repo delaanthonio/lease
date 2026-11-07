@@ -148,7 +148,7 @@ slots = 1
 slots = 3
 ```
 
-The file lives at `$LEASE_CONFIG`, or `lease config.toml` under the user
+The file lives at `$LEASE_CONFIG`, or `lease/config.toml` under the user
 config directory (`$XDG_CONFIG_HOME/lease/config.toml`, or
 `~/.config/lease/config.toml` on Linux,
 `~/Library/Application Support/lease/config.toml` on macOS). Resources
