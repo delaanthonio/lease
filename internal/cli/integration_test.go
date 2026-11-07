@@ -888,3 +888,51 @@ func TestNamedStatusPrunesExpiredHistory(t *testing.T) {
 		t.Fatalf("expired history retained: %s", data)
 	}
 }
+
+func TestStatusDuringHistoryPruneContention(t *testing.T) {
+	dir, env := leaseEnv(t)
+	st := store.NewFileStore(dir)
+	if err := st.SetHolder(&store.Holder{Resource: "db", Slot: 1, PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := json.Marshal(store.Event{At: time.Now().Add(-31 * 24 * time.Hour), Resource: "expired", Detail: "expired-secret"})
+	recent, _ := json.Marshal(store.Event{At: time.Now(), Resource: "db", Detail: "recent"})
+	data := append(append(append(old, '\n'), recent...), '\n')
+	if err := os.WriteFile(filepath.Join(dir, "events.ndjson"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "events.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	for _, args := range [][]string{{"status", "--json", "db"}, {"status", "--json"}} {
+		out, stderr, code := runLease(t, env, 5*time.Second, args...)
+		var views []struct {
+			Resource string `json:"resource"`
+			Total    int    `json:"total"`
+		}
+		if code != 0 || json.Unmarshal([]byte(out), &views) != nil || len(views) != 1 || views[0].Resource != "db" || views[0].Total != 1 {
+			t.Fatalf("%v: exit=%d stdout=%q stderr=%q", args, code, out, stderr)
+		}
+	}
+	events, err := st.Events()
+	if err != nil || len(events) != 1 || events[0].Detail != "recent" {
+		t.Fatalf("filtered events: %+v %v", events, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	events, err = st.Events()
+	if err != nil || len(events) != 1 || events[0].Detail != "recent" {
+		t.Fatalf("pruned events: %+v %v", events, err)
+	}
+	persisted := readFile(t, filepath.Join(dir, "events.ndjson"))
+	if strings.Contains(persisted, "expired-secret") {
+		t.Fatalf("expired event not pruned: %s", persisted)
+	}
+}

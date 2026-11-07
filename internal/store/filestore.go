@@ -318,7 +318,10 @@ func (s *FileStore) Events() ([]Event, error) {
 	}
 	defer lf.Close()
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, ErrHistoryBusy
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return kept, nil
+		}
+		return nil, err
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 	events, err = s.readEvents()
