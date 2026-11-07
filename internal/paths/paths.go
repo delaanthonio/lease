@@ -23,6 +23,9 @@ const ConfigEnv = "LEASE_CONFIG"
 // (XDG_STATE_HOME/lease or the platform default). lookEnv is injected for
 // tests.
 func StateDir(lookEnv func(string) (string, bool)) string {
+	if v, ok := lookEnv("LEASE_DIR"); ok && v != "" {
+		return v
+	}
 	if v, ok := lookEnv(StateDirEnv); ok && v != "" {
 		return v
 	}
@@ -62,4 +65,35 @@ func ConfigFile(lookEnv func(string) (string, bool)) string {
 
 func isDarwin() bool {
 	return runtime.GOOS == "darwin"
+}
+
+var Shared bool
+
+func DirMode() os.FileMode {
+	if Shared {
+		return 0770
+	}
+	return 0700
+}
+func FileMode() os.FileMode {
+	if Shared {
+		return 0660
+	}
+	return 0600
+}
+
+func MkdirAll(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if err := MkdirAll(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := os.Mkdir(path, DirMode()); err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.Chmod(path, DirMode())
 }

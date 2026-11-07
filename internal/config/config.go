@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -26,9 +27,15 @@ type Config struct {
 	Path          string
 	Resources     map[string]Resource
 	RecordCommand bool
+	ManualTTL     time.Duration
+	Dir           string
+	Shared        bool
 }
 
 type file struct {
+	Dir           string              `toml:"dir"`
+	Shared        bool                `toml:"shared"`
+	ManualTTL     string              `toml:"manual_ttl"`
 	RecordCommand bool                `toml:"record_command"`
 	Resources     map[string]Resource `toml:"resources"`
 }
@@ -36,7 +43,7 @@ type file struct {
 // Load reads the config file at path. A missing file is not an error: the
 // returned Config then holds defaults only and Path is empty.
 func Load(path string) (*Config, error) {
-	cfg := &Config{Resources: map[string]Resource{}}
+	cfg := &Config{Resources: map[string]Resource{}, ManualTTL: 30 * time.Minute}
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return cfg, nil
@@ -54,6 +61,14 @@ func Load(path string) (*Config, error) {
 		}
 		cfg.Resources[name] = r
 	}
+	if f.ManualTTL != "" {
+		d, err := time.ParseDuration(f.ManualTTL)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("invalid manual_ttl %q", f.ManualTTL)
+		}
+		cfg.ManualTTL = d
+	}
+	cfg.Dir, cfg.Shared = f.Dir, f.Shared
 	cfg.RecordCommand = f.RecordCommand
 	cfg.Path = path
 	return cfg, nil

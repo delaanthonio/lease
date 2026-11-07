@@ -150,6 +150,11 @@ func (o *Options) Acquire(names []string) (*Acquired, error) {
 	}
 	sorted := append([]string(nil), names...)
 	sort.Strings(sorted)
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i] == sorted[i-1] {
+			return nil, fmt.Errorf("duplicate resource %q", sorted[i])
+		}
+	}
 
 	a := &Acquired{
 		opts:   o,
@@ -220,6 +225,9 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 		return fmt.Errorf("resource %q has %d slot(s) but %d were requested", resource, total, want)
 	}
 	for {
+		if o.Context != nil && o.Context.Err() != nil {
+			return o.Context.Err()
+		}
 		// Tentatively lock free slots until the wanted count is reached.
 		var taken []unit
 		for slot := 1; slot <= total && len(taken) < want; slot++ {
@@ -243,6 +251,10 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 			f.Close()
 		}
 		if len(taken) >= want {
+			if id := a.waiter[resource]; id != "" {
+				_ = o.Store.DropWaiter(id)
+				delete(a.waiter, resource)
+			}
 			for _, u := range taken {
 				a.units = append(a.units, u)
 				o.resolveExistingRecord(u)
@@ -252,6 +264,9 @@ func (o *Options) acquireResource(a *Acquired, resource string, deadline time.Ti
 		// Not enough slots free together: hold nothing while waiting.
 		a.dropTentative(taken)
 		if !o.waitRound(a, resource, deadline) {
+			if o.Context != nil && o.Context.Err() != nil {
+				return o.Context.Err()
+			}
 			return o.busyAt(resource)
 		}
 	}
@@ -312,14 +327,16 @@ func (o *Options) waitRound(a *Acquired, resource string, deadline time.Time) bo
 		id, err := randomID("wait-")
 		if err == nil {
 			ticket := &store.Waiter{
-				ID:       id,
-				Resource: resource,
-				User:     o.Identity.User,
-				TaskID:   o.Identity.TaskID,
-				CIRunID:  o.Identity.CIRunID,
-				CIJob:    o.Identity.CIJob,
-				Command:  o.Command,
-				Since:    o.now().UTC(),
+				ID:        id,
+				PID:       os.Getpid(),
+				ProcStart: proc.Fingerprint(os.Getpid()),
+				Resource:  resource,
+				User:      o.Identity.User,
+				TaskID:    o.Identity.TaskID,
+				CIRunID:   o.Identity.CIRunID,
+				CIJob:     o.Identity.CIJob,
+				Command:   o.Command,
+				Since:     o.now().UTC(),
 			}
 			if err := o.Store.EnqueueWaiter(ticket); err == nil {
 				a.waiter[resource] = id

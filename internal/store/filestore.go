@@ -10,7 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/delaanthonio/lease/internal/paths"
+	"github.com/delaanthonio/lease/internal/proc"
 )
 
 // FileStore keeps metadata as small files under one root directory:
@@ -34,7 +38,7 @@ func NewFileStore(dir string) *FileStore {
 // NameValid reports whether a resource name can be used as a file name.
 // Names may contain letters, digits, dashes, dots, and underscores.
 func NameValid(name string) bool {
-	if name == "" || len(name) > 128 {
+	if name == "" || name == "." || name == ".." || len(name) > 128 {
 		return false
 	}
 	for _, r := range name {
@@ -125,7 +129,7 @@ func (s *FileStore) SetHolder(h *Holder) error {
 		return fmt.Errorf("invalid resource name %q", h.Resource)
 	}
 	path := s.holderPath(h.Resource, h.Slot)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := paths.MkdirAll(filepath.Dir(path)); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(h)
@@ -165,6 +169,10 @@ func (s *FileStore) Waiters(resource string) ([]Waiter, error) {
 		if err := json.Unmarshal(raw, &w); err != nil {
 			continue // A partially written ticket is skipped.
 		}
+		if w.PID > 0 && proc.HolderIsStale(w.PID, w.ProcStart) != nil {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+			continue
+		}
 		out = append(out, w)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Since.Before(out[j].Since) })
@@ -176,7 +184,7 @@ func (s *FileStore) EnqueueWaiter(w *Waiter) error {
 		return fmt.Errorf("invalid resource name %q", w.Resource)
 	}
 	path := s.waiterPath(w.Resource, w.ID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := paths.MkdirAll(filepath.Dir(path)); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(w)
@@ -213,21 +221,70 @@ func (s *FileStore) AppendEvent(e Event) error {
 	if e.At.IsZero() {
 		e.At = time.Now().UTC()
 	}
-	raw, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
 	s.eventsMu.Lock()
 	defer s.eventsMu.Unlock()
-	f, err := os.OpenFile(s.eventsPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err := paths.MkdirAll(s.root); err != nil {
+		return err
+	}
+	lf, err := os.OpenFile(filepath.Join(s.root, "events.lock"), os.O_CREATE|os.O_RDWR, paths.FileMode())
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := f.Write(append(raw, '\n')); err != nil {
+	defer lf.Close()
+	if paths.Shared {
+		if err = lf.Chmod(paths.FileMode()); err != nil {
+			return err
+		}
+	}
+	if err = syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
-	return f.Sync()
+	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+	events, err := s.Events()
+	if err != nil {
+		return err
+	}
+	events = append(events, e)
+	cutoff := time.Now().Add(-30 * 24 * time.Hour)
+	kept := events[:0]
+	for _, event := range events {
+		if !event.At.Before(cutoff) {
+			kept = append(kept, event)
+		}
+	}
+	if len(kept) > 1000 {
+		kept = kept[len(kept)-1000:]
+	}
+	var b strings.Builder
+	for _, event := range kept {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		b.Write(raw)
+		b.WriteByte('\n')
+	}
+	return writePrivateFileSync(s.eventsPath(), []byte(b.String()))
+}
+
+func writePrivateFileSync(path string, raw []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".history-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (s *FileStore) Events() ([]Event, error) {
@@ -289,6 +346,11 @@ func (s *FileStore) Resources() ([]string, error) {
 func writeFileSync(path string, raw []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
+		return err
+	}
+	if err := tmp.Chmod(paths.FileMode()); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
 		return err
 	}
 	tmpName := tmp.Name()

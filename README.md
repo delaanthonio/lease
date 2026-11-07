@@ -206,3 +206,16 @@ awareness, no killing of processes. It coordinates; it does not decide.
 
 Apache-2.0. Copyright 2026 Dela Anthonio. See [LICENSE](LICENSE) and
 [NOTICE](NOTICE).
+
+
+### Coordination and privacy
+
+Workers, skills, and CI must run as the same user, or use the same `LEASE_DIR` and a common group. Set `dir` in the config as an alternative to `LEASE_DIR`; environment overrides take precedence. For a group-owned directory, set `shared = true` in every participant's config. New directories use mode 0770 and coordination files 0660; the default is 0700 and 0600. History remains private (0600).
+
+Commands record only the executable basename and holder identity by default. Use `--record-command` or `record_command = true` to include arguments. History retains at most 1,000 events and 30 days, whichever is smaller.
+
+Manual acquisitions use the calling parent as owner; `--owner-pid` selects another owner. A keeper releases when its owner exits or its TTL expires. The default TTL is 30 minutes, configurable with `manual_ttl = "30m"` or `--ttl`. A single token represents the complete acquisition; `lease release NAME` also releases a manual acquisition with the same holder identity.
+
+### Limits
+
+A child inherits the lock descriptors. If it deliberately closes them and the wrapper is killed, the resource may be released while the child is still running.

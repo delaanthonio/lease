@@ -128,21 +128,26 @@ func TestRunContentionTwoCallers(t *testing.T) {
 func TestHolderKilledIsTakenOver(t *testing.T) {
 	_, env := leaseEnv(t)
 
-	holder := exec.Command(leaseBin, "run", "db", "--", "/bin/sleep", "30")
+	holder := exec.Command(leaseBin, "run", "db", "--", "/bin/sleep", "3")
 	holder.Env = env
 	if err := holder.Start(); err != nil {
 		t.Fatalf("start holder: %v", err)
 	}
 	waitForHolder(t, env, "db")
 
-	// SIGKILL the holder: the kernel frees the flock, and the next caller
-	// takes over, noting the stale holder.
 	if err := holder.Process.Kill(); err != nil {
-		t.Fatalf("kill holder: %v", err)
+		t.Fatal(err)
 	}
 	_ = holder.Wait()
-
-	stdout, errOut, code := runLease(t, env, 10*time.Second, "run", "db", "--", "/bin/echo", "took-over")
+	stdout, _, code := runLease(t, env, 5*time.Second, "status", "--json", "db")
+	if code != 0 || !strings.Contains(stdout, `"used":1`) || strings.Contains(stdout, `"stale":true`) {
+		t.Fatalf("surviving child not shown held: %s", stdout)
+	}
+	_, _, code = runLease(t, env, 5*time.Second, "run", "db", "--no-wait", "--", "/bin/echo", "bad")
+	if code != 75 {
+		t.Fatalf("surviving child failed to retain lock: %d", code)
+	}
+	stdout, errOut, code := runLease(t, env, 8*time.Second, "run", "db", "--", "/bin/echo", "took-over")
 	if code != 0 || !strings.Contains(stdout, "took-over") {
 		t.Fatalf("takeover exit=%d stdout=%q stderr=%q", code, stdout, errOut)
 	}
@@ -251,7 +256,7 @@ func TestStatusJSONReportsHolderAndWaiting(t *testing.T) {
 	if views[0].Total != 2 || views[0].Used != 1 {
 		t.Fatalf("slots = %d/%d, want 1/2", views[0].Used, views[0].Total)
 	}
-	if len(views[0].Holders) != 1 || views[0].Holders[0].Command != "/bin/sleep 8" {
+	if len(views[0].Holders) != 1 || views[0].Holders[0].Command != "sleep" {
 		t.Fatalf("holder not reported: %+v", views[0].Holders)
 	}
 	if views[0].Waiting != 1 {
@@ -379,4 +384,85 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
+}
+
+func TestManualOwnerDeathReleasesLease(t *testing.T) {
+	dir, env := leaseEnv(t)
+	ready := filepath.Join(dir, "ready")
+	script := exec.Command("/bin/sh", "-c", `"$LEASE_BIN" acquire db >/dev/null || exit; touch "$READY"; exec sleep 30`)
+	script.Env = append(env, "LEASE_BIN="+leaseBin, "READY="+ready)
+	if err := script.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = script.Process.Kill(); _ = script.Wait() }()
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	waitForHolder(t, env, "db")
+	if err := script.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = script.Wait()
+	_, errOut, code := runLease(t, env, 5*time.Second, "run", "db", "--wait", "3s", "--", "/bin/echo")
+	if code != 0 {
+		t.Fatalf("owner death did not release lease: %d %s", code, errOut)
+	}
+}
+
+func TestKilledWaiterIsRemoved(t *testing.T) {
+	_, env := leaseEnv(t)
+	holder := exec.Command(leaseBin, "run", "db", "--", "/bin/sleep", "4")
+	holder.Env = env
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Process.Kill(); _ = holder.Wait() }()
+	waitForHolder(t, env, "db")
+	waiter := exec.Command(leaseBin, "run", "db", "--", "/bin/echo")
+	waiter.Env = env
+	if err := waiter.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		out, _, _ := runLease(t, env, 5*time.Second, "status", "--json", "db")
+		if strings.Contains(out, `"waiting":1`) {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	_ = waiter.Process.Kill()
+	_ = waiter.Wait()
+	out, _, code := runLease(t, env, 5*time.Second, "status", "--json", "db")
+	if code != 0 || !strings.Contains(out, `"waiting":0`) {
+		t.Fatalf("stale waiter remains: %s", out)
+	}
+}
+
+func TestSharedConfigAndManualSet(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	state := filepath.Join(dir, "shared")
+	writeFile(t, cfg, fmt.Sprintf("dir = %q\nshared = true\n[resources.pool]\nslots = 2\n", state))
+	env := append(os.Environ(), "LEASE_CONFIG="+cfg, "LEASE_DIR=", "LEASE_STATE_DIR=")
+	token, stderr, code := runLease(t, env, 5*time.Second, "acquire", "pool", "--slots", "2")
+	if code != 0 {
+		t.Fatalf("acquire: %d %s", code, stderr)
+	}
+	defer runLease(t, env, 5*time.Second, "release", strings.TrimSpace(token))
+	_, _, code = runLease(t, env, 5*time.Second, "run", "pool", "--no-wait", "--", "/bin/echo")
+	if code != 75 {
+		t.Fatalf("configured shared state did not coordinate: %d", code)
+	}
+	for _, item := range []struct {
+		path string
+		mode os.FileMode
+	}{{state, 0770}, {filepath.Join(state, "locks", "pool", "slot-1.lock"), 0660}, {filepath.Join(state, "holders", "pool", "1.json"), 0660}} {
+		info, err := os.Stat(item.path)
+		if err != nil || info.Mode().Perm() != item.mode {
+			t.Fatalf("mode %s: %v %v", item.path, info, err)
+		}
+	}
 }

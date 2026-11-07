@@ -97,8 +97,8 @@ func (r *RunOptions) prepare(stderr io.Writer) (*lease.Options, error) {
 		r.Wait = time.Nanosecond
 	}
 	opts := &lease.Options{
-		StateDir:  paths.StateDir(os.LookupEnv),
-		Store:     store.NewFileStore(paths.StateDir(os.LookupEnv)),
+		StateDir:  stateDir(cfg),
+		Store:     store.NewFileStore(stateDir(cfg)),
 		Config:    cfg,
 		Identity:  identityFromEnv(),
 		Requested: r.Slots,

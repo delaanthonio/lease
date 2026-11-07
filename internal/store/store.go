@@ -45,14 +45,16 @@ type Holder struct {
 // free up. Tickets are advisory: they exist so status can show who is
 // waiting and roughly since when.
 type Waiter struct {
-	ID       string    `json:"id"`
-	Resource string    `json:"resource"`
-	User     string    `json:"user,omitempty"`
-	TaskID   string    `json:"task_id,omitempty"`
-	CIRunID  string    `json:"ci_run_id,omitempty"`
-	CIJob    string    `json:"ci_job,omitempty"`
-	Command  string    `json:"command,omitempty"`
-	Since    time.Time `json:"since"`
+	PID       int       `json:"pid,omitempty"`
+	ProcStart string    `json:"proc_start,omitempty"`
+	ID        string    `json:"id"`
+	Resource  string    `json:"resource"`
+	User      string    `json:"user,omitempty"`
+	TaskID    string    `json:"task_id,omitempty"`
+	CIRunID   string    `json:"ci_run_id,omitempty"`
+	CIJob     string    `json:"ci_job,omitempty"`
+	Command   string    `json:"command,omitempty"`
+	Since     time.Time `json:"since"`
 }
 
 // Event is one entry in the append-only history, including every

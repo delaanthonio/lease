@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,14 +29,20 @@ import (
 // or agent that acquired it. The keeper itself picks whichever slot of the
 // resource is free first.
 type keeperFlags struct {
-	StateDir string
-	Resource string
-	Token    string
-	Config   string
-	Wait     time.Duration
-	NoWait   bool
-	TTL      time.Duration
-	Holder   holderIdentity
+	StateDir    string
+	Resource    string
+	Names       []string
+	Slots       int
+	OwnerPID    int
+	OwnerStart  string
+	ClientPID   int
+	ClientStart string
+	Token       string
+	Config      string
+	Wait        time.Duration
+	NoWait      bool
+	TTL         time.Duration
+	Holder      holderIdentity
 }
 
 // holderIdentity is the acquirer identity passed to the keeper, matching
@@ -57,10 +65,19 @@ func startKeeper(kf keeperFlags) (token string, release func(), err error) {
 	if err != nil {
 		return "", nil, err
 	}
+	namesJSON, err := json.Marshal(kf.Names)
+	if err != nil {
+		return "", nil, err
+	}
 	argv := []string{
 		os.Args[0], "_keeper",
 		"--state-dir", kf.StateDir,
-		"--resource", kf.Resource,
+		"--names-json", string(namesJSON),
+		"--slots", strconv.Itoa(kf.Slots),
+		"--owner-pid", strconv.Itoa(kf.OwnerPID),
+		"--owner-start", kf.OwnerStart,
+		"--client-pid", strconv.Itoa(os.Getpid()),
+		"--client-start", proc.Fingerprint(os.Getpid()),
 		"--token", kf.Token,
 		"--holder-json", string(holder),
 	}
@@ -130,7 +147,12 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 	kf := keeperFlags{}
 	fs := newFlagSet("_keeper", stderr)
 	fs.StringVar(&kf.StateDir, "state-dir", "", "")
-	fs.StringVar(&kf.Resource, "resource", "", "")
+	namesJSON := fs.String("names-json", "", "")
+	fs.IntVar(&kf.Slots, "slots", 1, "")
+	fs.IntVar(&kf.OwnerPID, "owner-pid", 0, "")
+	fs.StringVar(&kf.OwnerStart, "owner-start", "", "")
+	fs.IntVar(&kf.ClientPID, "client-pid", 0, "")
+	fs.StringVar(&kf.ClientStart, "client-start", "", "")
 	fs.StringVar(&kf.Token, "token", "", "")
 	fs.StringVar(&kf.Config, "config", "", "")
 	fs.DurationVar(&kf.Wait, "wait", 0, "")
@@ -140,7 +162,7 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(argv); err != nil {
 		return exitUsage
 	}
-	if kf.StateDir == "" || !store.NameValid(kf.Resource) {
+	if err := json.Unmarshal([]byte(*namesJSON), &kf.Names); err != nil || len(kf.Names) == 0 || kf.StateDir == "" || kf.Slots < 1 || kf.TTL <= 0 || kf.OwnerStart == "" || proc.HolderIsStale(kf.OwnerPID, kf.OwnerStart) != nil {
 		return exitUsage
 	}
 	if err := json.Unmarshal([]byte(*holderJSON), &kf.Holder); err != nil {
@@ -166,7 +188,7 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 		Store:     store.NewFileStore(kf.StateDir),
 		Config:    cfg,
 		Identity:  identity.Identity{User: kf.Holder.User, TaskID: kf.Holder.TaskID, CIRunID: kf.Holder.CIRunID, CIJob: kf.Holder.CIJob},
-		Requested: 1,
+		Requested: kf.Slots,
 		Wait:      kf.Wait,
 		TTL:       kf.TTL,
 		Token:     kf.Token,
@@ -175,7 +197,34 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "lease: "+format+"\n", args...)
 		},
 	}
-	acq, err := opts.AcquireOne(kf.Resource)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	acquiring := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				select {
+				case <-acquiring:
+				default:
+					if kf.ClientStart == "" || proc.HolderIsStale(kf.ClientPID, kf.ClientStart) != nil {
+						cancel()
+						return
+					}
+				}
+				if proc.HolderIsStale(kf.OwnerPID, kf.OwnerStart) != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	opts.Context = ctx
+	acq, err := opts.Acquire(kf.Names)
 	if err != nil {
 		var busy *lease.BusyError
 		if errors.As(err, &busy) {
@@ -187,21 +236,19 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Report success, then hold the slot until released.
+	defer acq.Release()
+	if ctx.Err() != nil {
+		return 1
+	}
+	close(acquiring)
 	fmt.Fprintf(stdout, "ok %s\n", kf.Token)
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-	sig := <-sigCh
-	_ = sig
-	acq.Release()
-	_ = opts.Store.AppendEvent(store.Event{
-		Kind:     store.EventRelease,
-		Resource: kf.Resource,
-		Slot:     acq.SlotOf(kf.Resource),
-		Actor:    opts.Identity.Label(),
-		Reason:   "released via token",
-	})
+	timer := time.NewTimer(kf.TTL)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+
 	return 0
 }
 
@@ -220,14 +267,24 @@ func markStdioCloseOnExec() {
 
 // releaseToken releases the slot held for a token: it finds the holder
 // record, signals its keeper, and waits for the record to clear.
-func releaseToken(token string) error {
-	st := store.NewFileStore(paths.StateDir(os.LookupEnv))
+func releaseToken(token, cfgPath string) error {
+	if cfgPath == "" {
+		cfgPath = paths.ConfigFile(os.LookupEnv)
+	}
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+	dir := stateDir(cfg)
+	st := store.NewFileStore(dir)
 	holders, err := st.Holders()
 	if err != nil {
 		return err
 	}
 	for _, h := range holders {
-		if h.Token == "" || h.Token != token {
+		id := identityFromEnv()
+		matchName := h.Resource == token && h.User == id.User && h.TaskID == id.TaskID && h.CIRunID == id.CIRunID && h.CIJob == id.CIJob
+		if h.Token == "" || (h.Token != token && !matchName) {
 			continue
 		}
 		if h.ProcStart != "" && proc.HolderIsStale(h.PID, h.ProcStart) == nil {
@@ -245,7 +302,7 @@ func releaseToken(token string) error {
 			}
 		}
 		// The keeper is gone: clear the stale record directly.
-		cleared, err := clearObserved(st, paths.StateDir(os.LookupEnv), &h)
+		cleared, err := clearObserved(st, dir, &h)
 		if err != nil {
 			return err
 		}

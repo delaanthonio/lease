@@ -1,9 +1,11 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,5 +236,41 @@ func TestFileStoreSurvivesTornLine(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want the 1 complete one", len(events))
+	}
+}
+
+func TestFileHistoryRetentionAndUnsafeNames(t *testing.T) {
+	st := NewFileStore(t.TempDir())
+	if NameValid(".") || NameValid("..") {
+		t.Fatal("path components accepted as resource names")
+	}
+	if !NameValid("db.v1") {
+		t.Fatal("valid dotted name rejected")
+	}
+	var lines strings.Builder
+	for i := 0; i < 1001; i++ {
+		raw, _ := json.Marshal(Event{At: time.Now(), Kind: EventAcquire, Detail: fmt.Sprint(i)})
+		lines.Write(raw)
+		lines.WriteByte('\n')
+	}
+	old, _ := json.Marshal(Event{At: time.Now().Add(-31 * 24 * time.Hour), Kind: EventAcquire, Detail: "old"})
+	lines.Write(old)
+	lines.WriteByte('\n')
+	if err := os.WriteFile(st.eventsPath(), []byte(lines.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(Event{Kind: EventRelease, Detail: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1000 || events[0].Detail != "2" || events[999].Detail != "new" {
+		t.Fatalf("retention: %d events", len(events))
+	}
+	info, err := os.Stat(st.eventsPath())
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("history mode: %v %v", info, err)
 	}
 }

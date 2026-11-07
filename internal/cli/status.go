@@ -26,6 +26,10 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	if err := lease.ValidateNames(names); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitUsage
+	}
 	cfgPath := *configPath
 	if cfgPath == "" {
 		cfgPath = paths.ConfigFile(os.LookupEnv)
@@ -39,7 +43,7 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 	// Named resources only, or every resource that exists on the machine.
 	resources := names
 	if len(resources) == 0 {
-		fst := store.NewFileStore(paths.StateDir(os.LookupEnv))
+		fst := store.NewFileStore(stateDir(cfg))
 		existing, err := fst.Resources()
 		if err != nil {
 			fmt.Fprintf(stderr, "lease: %s\n", err)
@@ -53,7 +57,7 @@ func StatusCommand(argv []string, stdout, stderr io.Writer) int {
 		resources = dedup(resources)
 	}
 
-	stateDir := paths.StateDir(os.LookupEnv)
+	stateDir := stateDir(cfg)
 	views, err := lease.Inspect(stateDir, store.NewFileStore(stateDir), cfg, resources)
 	if err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
@@ -89,7 +93,7 @@ func ConfigCommand(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "state dir: %s\n", paths.StateDir(os.LookupEnv))
+	fmt.Fprintf(stdout, "state dir: %s\n", stateDir(cfg))
 	if cfg.Path == "" {
 		fmt.Fprintln(stdout, "config file: (none, defaults in effect)")
 	} else {
@@ -130,6 +134,7 @@ func dedup(sorted []string) []string {
 func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("force-release", stderr)
 	reason := fs.String("reason", "", "why the lock is being force-released (required, logged)")
+	configPath := fs.String("config", "", "config file")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
@@ -145,7 +150,17 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	st := store.NewFileStore(paths.StateDir(os.LookupEnv))
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = paths.ConfigFile(os.LookupEnv)
+	}
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	dir := stateDir(cfg)
+	st := store.NewFileStore(dir)
 	holders, err := st.Holders()
 	if err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
@@ -165,7 +180,7 @@ func ForceReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		prev := lease.DescribeHolder(&h)
-		cleared, err := clearObserved(st, paths.StateDir(os.LookupEnv), &h)
+		cleared, err := clearObserved(st, dir, &h)
 		if err != nil {
 			fmt.Fprintf(stderr, "lease: %s\n", err)
 			return 1
@@ -200,6 +215,7 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 	opts := RunOptions{}
 	fs := newFlagSet("acquire", stderr)
 	opts.register(fs)
+	ownerPID := fs.Int("owner-pid", os.Getppid(), "process that owns the lease")
 	names, err := parseArgs(fs, argv)
 	if err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
@@ -220,62 +236,49 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	command := "lease"
-	var releases []func()
-	var tokens []string
+	if err := lease.ValidateNames(names); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitUsage
+	}
+	if opts.Slots < 1 {
+		fmt.Fprintln(stderr, "lease: slots must be positive")
+		return exitUsage
+	}
 	for _, name := range names {
 		if opts.Slots > leaseOpts.Capacity(name) {
-			fmt.Fprintf(stderr, "lease: resource %q has %d slot(s) but %d were requested\n", name, leaseOpts.Capacity(name), opts.Slots)
-			releaseAll(releases)
+			fmt.Fprintf(stderr, "lease: resource %q has too few slots\n", name)
 			return exitUsage
 		}
-		for i := 0; i < opts.Slots; i++ {
-			token, err := newToken()
-			if err != nil {
-				fmt.Fprintf(stderr, "lease: %s\n", err)
-				releaseAll(releases)
-				return 1
-			}
-			tok, release, err := startKeeper(keeperFlags{
-				StateDir: leaseOpts.StateDir,
-				Resource: name,
-				Token:    token,
-				Config:   opts.Config,
-				Wait:     opts.Wait,
-				NoWait:   opts.NoWait,
-				TTL:      opts.TTL,
-				Holder: holderIdentity{
-					User:    leaseOpts.Identity.User,
-					TaskID:  leaseOpts.Identity.TaskID,
-					CIRunID: leaseOpts.Identity.CIRunID,
-					CIJob:   leaseOpts.Identity.CIJob,
-					Command: command,
-				},
-			})
-			if err != nil {
-				fmt.Fprintf(stderr, "lease: %s\n", err)
-				releaseAll(releases)
-				var busy *lease.BusyError
-				if errors.As(err, &busy) {
-					describeBusy(stderr, leaseOpts, name)
-					return lease.ExitBusy
-				}
-				return 1
-			}
-			tokens = append(tokens, tok)
-			releases = append(releases, release)
+	}
+	ownerStart := proc.Fingerprint(*ownerPID)
+	if ownerStart == "" {
+		fmt.Fprintln(stderr, "lease: owner process is not available")
+		return exitUsage
+	}
+	ttl := opts.TTL
+	if ttl == 0 {
+		ttl = leaseOpts.Config.ManualTTL
+	}
+	if ttl <= 0 {
+		fmt.Fprintln(stderr, "lease: manual TTL must be positive")
+		return exitUsage
+	}
+	token, err := newToken()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	tok, _, err := startKeeper(keeperFlags{StateDir: leaseOpts.StateDir, Names: names, Slots: opts.Slots, OwnerPID: *ownerPID, OwnerStart: ownerStart, Token: token, Config: opts.Config, Wait: opts.Wait, NoWait: opts.NoWait, TTL: ttl, Holder: holderIdentity{User: leaseOpts.Identity.User, TaskID: leaseOpts.Identity.TaskID, CIRunID: leaseOpts.Identity.CIRunID, CIJob: leaseOpts.Identity.CIJob, Command: "lease"}})
+	if err != nil {
+		fmt.Fprintf(stderr, "lease: %s\n", err)
+		var busy *lease.BusyError
+		if errors.As(err, &busy) {
+			return lease.ExitBusy
 		}
+		return 1
 	}
-	for _, token := range tokens {
-		fmt.Fprintln(stdout, token)
-	}
+	fmt.Fprintln(stdout, tok)
 	return 0
-}
-
-func releaseAll(releases []func()) {
-	for _, release := range releases {
-		release()
-	}
 }
 
 // describeBusy prints the holder of a busy resource when one is recorded.
@@ -295,14 +298,16 @@ func describeBusy(stderr io.Writer, opts *lease.Options, name string) {
 // ReleaseCommand implements lease release TOKEN.
 func ReleaseCommand(argv []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("release", stderr)
-	if err := fs.Parse(argv); err != nil {
+	configPath := fs.String("config", "", "config file")
+	args, err := parseArgs(fs, argv)
+	if err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 1 {
+	if len(args) != 1 {
 		fmt.Fprintln(stderr, "usage: lease release TOKEN")
 		return exitUsage
 	}
-	if err := releaseToken(fs.Arg(0)); err != nil {
+	if err := releaseToken(args[0], *configPath); err != nil {
 		fmt.Fprintf(stderr, "lease: %s\n", err)
 		return 1
 	}

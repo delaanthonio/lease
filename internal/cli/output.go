@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/delaanthonio/lease/internal/lease"
-	"github.com/delaanthonio/lease/internal/proc"
-	"github.com/delaanthonio/lease/internal/store"
 )
 
 // jsonResourceView is the stable, compact JSON shape of one resource in
@@ -55,7 +53,6 @@ func RenderJSON(w io.Writer, views []lease.ResourceView) error {
 				PID:     h.PID,
 				Command: h.Command,
 				Since:   h.AcquiredAt.UTC().Format(time.RFC3339),
-				Stale:   holderStale(h),
 			})
 		}
 		out = append(out, jv)
@@ -63,13 +60,6 @@ func RenderJSON(w io.Writer, views []lease.ResourceView) error {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	return enc.Encode(out)
-}
-
-func holderStale(h *store.Holder) bool {
-	if h == nil {
-		return false
-	}
-	return proc.HolderIsStale(h.PID, h.ProcStart) != nil
 }
 
 // RenderTable writes the human-readable status table.
@@ -86,9 +76,6 @@ func RenderTable(w io.Writer, views []lease.ResourceView, now time.Time) {
 				continue
 			}
 			holder := lease.DescribeHolder(h)
-			if holderStale(h) {
-				holder += " (stale)"
-			}
 			rows = append(rows, []string{
 				v.Resource,
 				holder,

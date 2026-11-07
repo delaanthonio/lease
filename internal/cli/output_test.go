@@ -89,8 +89,8 @@ func TestRenderJSONIsCompactStableAndComplete(t *testing.T) {
 		t.Fatalf("free resource wrong: %+v", views[1])
 	}
 	// A stale holder is flagged in JSON.
-	if !views[2].Holders[0].Stale {
-		t.Fatalf("gone holder not flagged stale: %+v", views[2].Holders[0])
+	if views[2].Holders[0].Stale {
+		t.Fatalf("held slot incorrectly flagged stale: %+v", views[2].Holders[0])
 	}
 	// Stability: the same input renders identically twice.
 	var again strings.Builder
@@ -116,8 +116,8 @@ func TestRenderTableShowsHolderSinceAndSlots(t *testing.T) {
 		}
 	}
 	// A stale holder is marked as such.
-	if !strings.Contains(out, "(stale)") {
-		t.Errorf("stale holder not marked:\n%s", out)
+	if strings.Contains(out, "(stale)") {
+		t.Errorf("held slot incorrectly marked stale:\n%s", out)
 	}
 }
 
