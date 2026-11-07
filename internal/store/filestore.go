@@ -244,7 +244,7 @@ func (s *FileStore) AppendEventContext(ctx context.Context, e Event, noWait bool
 			return err
 		}
 		if noWait {
-			return fmt.Errorf("history lock is busy")
+			return ErrHistoryBusy
 		}
 		timer := time.NewTimer(10 * time.Millisecond)
 		select {

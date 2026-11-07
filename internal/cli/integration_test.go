@@ -608,6 +608,16 @@ func TestHistoryLockHonorsDeadlineAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+	slot, err := lock.OpenSlot(dir, "db", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slot.Close()
+	ok, err := lock.TryLock(slot)
+	if err != nil || !ok {
+		t.Fatalf("lock resource: %v", err)
+	}
+	defer lock.Unlock(slot)
 	for _, command := range []string{"run", "acquire"} {
 		args := []string{command, "db", "--wait", "100ms"}
 		if command == "run" {
@@ -618,12 +628,8 @@ func TestHistoryLockHonorsDeadlineAndCancellation(t *testing.T) {
 		if code != 75 || time.Since(start) > 2*time.Second || strings.Contains(out, "unexpected") {
 			t.Fatalf("%v: exit %d, output %q, stderr %q", args, code, out, stderr)
 		}
-		used, err := lock.Probe(dir, "db", 1)
-		if err != nil || used {
-			t.Fatalf("partial lock survived: %v %v", used, err)
-		}
 	}
-	cmd := exec.Command(leaseBin, "run", "a", "b", "--", "/bin/echo", "unexpected")
+	cmd := exec.Command(leaseBin, "run", "a", "db", "--", "/bin/echo", "unexpected")
 	cmd.Env = env
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -638,71 +644,86 @@ func TestHistoryLockHonorsDeadlineAndCancellation(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("SIGTERM did not interrupt history lock")
+		t.Fatal("SIGTERM did not interrupt acquisition")
 	}
-	for _, name := range []string{"a", "b"} {
-		used, err := lock.Probe(dir, name, 1)
-		if err != nil || used {
-			t.Fatalf("%s still held: %v %v", name, used, err)
-		}
+	used, err := lock.Probe(dir, "a", 1)
+	if err != nil || used {
+		t.Fatalf("partial lock retained: %v %v", used, err)
 	}
 }
 
 func TestNoWaitDoesNotWaitForHistoryLock(t *testing.T) {
 	for _, command := range []string{"run", "acquire"} {
 		for _, scenario := range []string{"free", "busy", "takeover"} {
-			t.Run(command+"/"+scenario, func(t *testing.T) {
-				dir, env := leaseEnv(t)
-				var slot *os.File
-				if scenario == "busy" {
-					var err error
-					slot, err = lock.OpenSlot(dir, "db", 1)
+			for _, wait := range []string{"--no-wait", "--wait=500ms", "--wait=0"} {
+				if scenario == "busy" && wait == "--wait=0" {
+					continue
+				}
+				t.Run(command+"/"+scenario+"/"+wait, func(t *testing.T) {
+					dir, env := leaseEnv(t)
+					if scenario == "busy" {
+						slot, err := lock.OpenSlot(dir, "db", 1)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer slot.Close()
+						ok, err := lock.TryLock(slot)
+						if err != nil || !ok {
+							t.Fatalf("lock resource: %v", err)
+						}
+						defer lock.Unlock(slot)
+					}
+					if scenario == "takeover" {
+						if err := store.NewFileStore(dir).SetHolder(&store.Holder{Resource: "db", Slot: 1, PID: 999999999, ProcStart: "gone"}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					history, err := os.OpenFile(filepath.Join(dir, "events.lock"), os.O_CREATE|os.O_RDWR, 0600)
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer slot.Close()
-					ok, err := lock.TryLock(slot)
-					if err != nil || !ok {
-						t.Fatalf("lock resource: %v", err)
-					}
-					defer lock.Unlock(slot)
-				}
-				if scenario == "takeover" {
-					if err := store.NewFileStore(dir).SetHolder(&store.Holder{Resource: "db", Slot: 1, PID: 999999999, ProcStart: "gone"}); err != nil {
+					defer history.Close()
+					if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
 						t.Fatal(err)
 					}
-				}
-				history, err := os.OpenFile(filepath.Join(dir, "events.lock"), os.O_CREATE|os.O_RDWR, 0600)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer history.Close()
-				if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
-					t.Fatal(err)
-				}
-				defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
-				args := []string{command, "db", "--no-wait"}
-				if command == "run" {
-					args = append(args, "--", "/bin/echo", "unexpected")
-				}
-				start := time.Now()
-				out, stderr, code := runLease(t, env, 3*time.Second, args...)
-				if time.Since(start) > 2*time.Second || code == 0 || strings.Contains(out, "unexpected") {
-					t.Fatalf("%v: exit %d, stdout %q, stderr %q", args, code, out, stderr)
-				}
-				if scenario == "busy" && code != 75 {
-					t.Fatalf("busy resource exit %d: %s", code, stderr)
-				}
-				if scenario != "busy" && !strings.Contains(stderr, "history lock is busy") {
-					t.Fatalf("missing history error: %s", stderr)
-				}
-				if scenario != "busy" {
+					defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+					args := []string{command, "db", wait}
+					if command == "run" {
+						args = append(args, "--", "/bin/echo", "executed")
+					}
+					start := time.Now()
+					out, stderr, code := runLease(t, env, 3*time.Second, args...)
+					if time.Since(start) > 2*time.Second {
+						t.Fatalf("history contention delayed %v", args)
+					}
+					if scenario == "busy" {
+						if code != 75 {
+							t.Fatalf("busy resource exit %d: %s", code, stderr)
+						}
+						return
+					}
+					if code != 0 {
+						t.Fatalf("%v: exit %d, stdout %q, stderr %q", args, code, out, stderr)
+					}
+					if command == "run" && !strings.Contains(out, "executed") {
+						t.Fatalf("command did not run: %q", out)
+					}
+					if command == "acquire" {
+						token := strings.TrimSpace(out)
+						if !strings.HasPrefix(token, "l-") {
+							t.Fatalf("missing token: %q", out)
+						}
+						_, stderr, code = runLease(t, env, 3*time.Second, "release", token)
+						if code != 0 {
+							t.Fatalf("release: %s", stderr)
+						}
+					}
 					used, err := lock.Probe(dir, "db", 1)
 					if err != nil || used {
 						t.Fatalf("resource not released: %v %v", used, err)
 					}
-				}
-			})
+				})
+			}
 		}
 	}
 }
@@ -769,5 +790,60 @@ func TestNoWaitWithFreeResourceAndHistory(t *testing.T) {
 	_, stderr, code = runLease(t, env, 3*time.Second, "release", strings.TrimSpace(token))
 	if code != 0 {
 		t.Fatalf("release: exit %d stderr %q", code, stderr)
+	}
+}
+
+func TestManualBusyReportsResourceAndHolder(t *testing.T) {
+	_, env := leaseEnv(t)
+	holder := exec.Command(leaseBin, "run", "db", "--", "/bin/sleep", "5")
+	holder.Env = append(env, "FM_TASK_ID=busy-holder")
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Process.Kill(); _ = holder.Wait() }()
+	found := false
+	for i := 0; i < 100; i++ {
+		out, _, _ := runLease(t, env, 3*time.Second, "status", "--json", "db")
+		if strings.Contains(out, "task:busy-holder") {
+			found = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !found {
+		t.Fatal("holder was not recorded")
+	}
+	for _, names := range [][]string{{"db"}, {"a", "db"}} {
+		args := append([]string{"acquire"}, names...)
+		args = append(args, "--no-wait")
+		_, stderr, code := runLease(t, env, 3*time.Second, args...)
+		if code != 75 || !strings.Contains(stderr, `resource "db"`) || !strings.Contains(stderr, "task:busy-holder") {
+			t.Fatalf("%v: exit %d stderr %q", args, code, stderr)
+		}
+	}
+}
+
+func TestStaleManualReleaseSkipsBusyHistory(t *testing.T) {
+	dir, env := leaseEnv(t)
+	st := store.NewFileStore(dir)
+	if err := st.SetHolder(&store.Holder{Resource: "db", Slot: 1, Token: "l-stale", PID: 999999999, ProcStart: "gone"}); err != nil {
+		t.Fatal(err)
+	}
+	history, err := os.OpenFile(filepath.Join(dir, "events.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer history.Close()
+	if err := syscall.Flock(int(history.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(history.Fd()), syscall.LOCK_UN)
+	_, stderr, code := runLease(t, env, 3*time.Second, "release", "l-stale")
+	if code != 0 {
+		t.Fatalf("release: exit %d stderr %q", code, stderr)
+	}
+	h, err := st.Holder("db", 1)
+	if err != nil || h != nil {
+		t.Fatalf("stale holder survived: %+v %v", h, err)
 	}
 }

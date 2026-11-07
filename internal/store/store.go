@@ -10,8 +10,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrHistoryBusy = errors.New("history lock is busy")
 
 // Event kinds written to the append-only history.
 const (

@@ -30,7 +30,6 @@ import (
 // resource is free first.
 type keeperFlags struct {
 	StateDir    string
-	Resource    string
 	Names       []string
 	Slots       int
 	OwnerPID    int
@@ -123,16 +122,20 @@ func startKeeper(kf keeperFlags) (token string, release func(), err error) {
 	}()
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	if err != nil {
-		return "", nil, fmt.Errorf("keeper for %q did not report: %w", kf.Resource, err)
+		return "", nil, fmt.Errorf("keeper for %q did not report: %w", kf.Names, err)
 	}
-	if strings.HasPrefix(line, "busy") {
-		return "", nil, &lease.BusyError{Resource: kf.Resource}
+	if strings.HasPrefix(line, "busy ") {
+		var busy lease.BusyError
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "busy "))), &busy); err != nil {
+			return "", nil, fmt.Errorf("invalid keeper busy response: %w", err)
+		}
+		return "", nil, &busy
 	}
 	if strings.HasPrefix(line, "err ") {
-		return "", nil, fmt.Errorf("keeper for %q failed: %s", kf.Resource, strings.TrimSpace(strings.TrimPrefix(line, "err ")))
+		return "", nil, fmt.Errorf("keeper for %q failed: %s", kf.Names, strings.TrimSpace(strings.TrimPrefix(line, "err ")))
 	}
 	if !strings.HasPrefix(line, "ok ") {
-		return "", nil, fmt.Errorf("keeper for %q failed: %s", kf.Resource, strings.TrimSpace(line))
+		return "", nil, fmt.Errorf("keeper for %q failed: %s", kf.Names, strings.TrimSpace(line))
 	}
 	keeperDone = true
 	token = strings.TrimSpace(strings.TrimPrefix(line, "ok "))
@@ -228,7 +231,8 @@ func KeeperCommand(argv []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		var busy *lease.BusyError
 		if errors.As(err, &busy) {
-			fmt.Fprintln(stdout, "busy")
+			fmt.Fprint(stdout, "busy ")
+			_ = json.NewEncoder(stdout).Encode(busy)
 			return lease.ExitBusy
 		}
 		// stderr is /dev/null for a keeper; report over the protocol.
@@ -321,7 +325,7 @@ func releaseToken(token, cfgPath string) error {
 					return err
 				}
 				if cleared {
-					if err := st.AppendEvent(store.Event{Kind: store.EventRelease, Resource: h.Resource, Slot: h.Slot, Reason: "keeper already gone; stale record cleared"}); err != nil {
+					if err := store.AppendEventContext(context.Background(), st, store.Event{Kind: store.EventRelease, Resource: h.Resource, Slot: h.Slot, Reason: "keeper already gone; stale record cleared"}, true); err != nil && !errors.Is(err, store.ErrHistoryBusy) {
 						return err
 					}
 				}
