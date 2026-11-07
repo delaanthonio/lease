@@ -54,6 +54,16 @@ type holderIdentity struct {
 	Command string `json:"command,omitempty"`
 }
 
+// selfPath returns the path of the currently running executable, falling
+// back to os.Args[0] when the runtime cannot resolve it, so the keeper
+// always spawns from the same binary the caller ran.
+func selfPath() string {
+	if self, err := os.Executable(); err == nil {
+		return self
+	}
+	return os.Args[0]
+}
+
 // startKeeper spawns one keeper process for a slot and waits for it to
 // report the acquisition result on its stdout pipe. The returned token is
 // what 'lease release' later accepts; the returned release function stops
@@ -69,7 +79,7 @@ func startKeeper(kf keeperFlags) (token string, release func(), err error) {
 		return "", nil, err
 	}
 	argv := []string{
-		os.Args[0], "_keeper",
+		selfPath(), "_keeper",
 		"--state-dir", kf.StateDir,
 		"--names-json", string(namesJSON),
 		"--slots", strconv.Itoa(kf.Slots),
