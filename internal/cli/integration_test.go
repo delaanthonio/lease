@@ -319,26 +319,60 @@ func TestAcquireReleaseTokenFlow(t *testing.T) {
 }
 
 func TestAcquireReleasesResourcesWhenTokenOutputFails(t *testing.T) {
-	dir, env := leaseEnv(t)
-	output, err := os.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer output.Close()
+	for _, outputType := range []string{"directory", "closed pipe"} {
+		t.Run(outputType, func(t *testing.T) {
+			dir, env := leaseEnv(t)
+			var output *os.File
+			var err error
+			if outputType == "directory" {
+				output, err = os.Open(dir)
+			} else {
+				var reader *os.File
+				reader, output, err = os.Pipe()
+				if err == nil {
+					err = reader.Close()
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
 
-	cmd := exec.Command(leaseBin, "acquire", "db", "ports")
+			cmd := exec.Command(leaseBin, "acquire", "db", "ports")
+			cmd.Env = env
+			cmd.Stdout = output
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err == nil || !strings.Contains(stderr.String(), "write token") {
+				t.Fatalf("acquire error = %v, stderr = %q", err, stderr.String())
+			}
+			token, stderrText, code := runLease(t, env, 10*time.Second, "acquire", "db", "ports", "--no-wait")
+			if code != 0 {
+				t.Fatalf("resources remain held: exit %d, stderr %q", code, stderrText)
+			}
+			_, stderrText, code = runLease(t, env, 10*time.Second, "release", strings.TrimSpace(token))
+			if code != 0 {
+				t.Fatalf("release: exit %d, stderr %q", code, stderrText)
+			}
+		})
+	}
+}
+
+func TestAcquireWithMisleadingInvocationName(t *testing.T) {
+	_, env := leaseEnv(t)
+	cmd := exec.Command(leaseBin, "acquire", "db")
+	cmd.Args[0] = "definitely-not-lease"
 	cmd.Env = env
-	cmd.Stdout = output
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err == nil || !strings.Contains(stderr.String(), "write token") {
-		t.Fatalf("acquire error = %v, stderr = %q", err, stderr.String())
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("acquire: %v, stderr %q", err, stderr.String())
 	}
-	token, stderrText, code := runLease(t, env, 10*time.Second, "acquire", "db", "ports", "--no-wait")
-	if code != 0 {
-		t.Fatalf("resources remain held: exit %d, stderr %q", code, stderrText)
+	token := strings.TrimSpace(stdout.String())
+	if !strings.HasPrefix(token, "l-") {
+		t.Fatalf("acquire returned invalid token %q", token)
 	}
-	_, stderrText, code = runLease(t, env, 10*time.Second, "release", strings.TrimSpace(token))
+	_, stderrText, code := runLease(t, env, 10*time.Second, "release", token)
 	if code != 0 {
 		t.Fatalf("release: exit %d, stderr %q", code, stderrText)
 	}

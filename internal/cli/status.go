@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/delaanthonio/lease/internal/lease"
@@ -318,7 +320,11 @@ func AcquireCommand(argv []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	if _, err := fmt.Fprintln(stdout, tok); err != nil {
+	sigpipe := make(chan os.Signal, 1)
+	signal.Notify(sigpipe, syscall.SIGPIPE)
+	_, err = fmt.Fprintln(stdout, tok)
+	signal.Stop(sigpipe)
+	if err != nil {
 		release()
 		_, _ = fmt.Fprintf(stderr, "lease: write token: %s\n", err)
 		return 1
