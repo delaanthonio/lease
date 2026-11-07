@@ -214,7 +214,8 @@ changing the commands.
 ## Scope
 
 lease is deliberately small: no scheduling, no priorities, no load-average
-awareness, no killing of processes. It coordinates; it does not decide.
+awareness, and no killing resource processes to reclaim locks. It coordinates;
+it does not decide.
 
 ## Coordination and privacy
 
